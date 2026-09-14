@@ -249,12 +249,20 @@ def check_a1() -> None:
 
     from src.config.settings import get_settings
 
-    assert get_settings().ENABLE_RERANK is False, (
-        "ENABLE_RERANK 默认应为关闭：实测英文 Cross-Encoder 在中文语料上降低命中率"
+    settings = get_settings()
+    # 模型名必须来自配置。此前 Reranker 与 HybridRetriever 都把
+    # ms-marco-MiniLM-L-6-v2 写死在默认参数里，RERANKER_MODEL 改了也不生效。
+    assert "reranker_model=_settings.RERANKER_MODEL" in src, (
+        "重排模型未从 settings.RERANKER_MODEL 读取 —— 配置项又变成死开关"
+    )
+    assert settings.RERANKER_MODEL, "RERANKER_MODEL 未配置"
+    assert "ms-marco" not in settings.RERANKER_MODEL, (
+        "默认重排模型仍是英文 ms-marco：实测在中文语料上有害（MRR -0.061）"
     )
     _ok(
         "A1 重排开关",
-        "开关默认关闭（实测无效，见 retrieval_experiment.json）；流式显式关闭；缓存 key 隔离",
+        f"开关接管非流式；流式显式关闭；缓存 key 隔离；"
+        f"模型取自配置（{settings.RERANKER_MODEL.split('/')[-1]}）",
     )
 
 

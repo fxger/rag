@@ -59,6 +59,7 @@ data/
 # 实验与容量报告是简历数据的唯一依据，必须随仓库分发
 # （否则"准确率提升 X%"这类说法就失去了可追溯的来源）
 !retrieval_experiment.json
+!retrieval_experiment_rerankers.json
 !capacity_report.json
 
 # Model cache

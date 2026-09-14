@@ -77,11 +77,14 @@ class Settings(BaseSettings):
     ENABLE_RERANK: bool = Field(
         default=False,
         description=(
-            "对非流式查询启用 Cross-Encoder 精排。默认关闭。"
-            "原因：实测 ms-marco-MiniLM-L-6-v2（英文模型）在本项目中文语料上"
-            "会拉低效果（HitRate@5 0.95→0.80，耗时 21.6s→92.4s）。"
-            "详见 scripts/retrieval_experiment.py 与 retrieval_experiment.json。"
-            "换用中文 Cross-Encoder（如 BAAI/bge-reranker-base）后可重新评估。"
+            "对非流式查询启用 Cross-Encoder 精排。"
+            "注意：效果完全取决于 RERANKER_MODEL 的语言能力——实测（20 查询 / "
+            "754 分块，scripts/retrieval_experiment.py，相对混合检索 RRF）："
+            "英文 ms-marco-MiniLM-L-6-v2 HitRate 0.95→0.80、MRR -0.061（有害）；"
+            "中文 bge-reranker-base HitRate 0.95→1.00、MRR +0.138；"
+            "多语 bge-reranker-v2-m3 HitRate 0.95→1.00、MRR +0.246。"
+            "因此本项默认关闭仅出于可移植性（默认模型需联网获取），"
+            "本机 .env 已开启并指向本地缓存的中文模型。"
         ),
     )
 
@@ -120,8 +123,14 @@ class Settings(BaseSettings):
     # ── Reranker Settings ────────────────────────────────────────────
     RERANKER_ENABLED: bool = Field(default=True, description="Enable cross-encoder reranking")
     RERANKER_MODEL: str = Field(
-        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
-        description="Cross-encoder model name"
+        default="BAAI/bge-reranker-base",
+        description=(
+            "Cross-encoder 模型名或本地目录。默认已换为中文/多语模型："
+            "实测英文 ms-marco 在本项目中文语料上会降低排序质量。"
+            "吞吐参考（本机 CPU，20 候选/查询）：bge-reranker-base ≈ 3.8s，"
+            "bge-reranker-v2-m3 ≈ 13.1s（质量更高，MRR 0.942 vs 0.833）。"
+            "离线环境可填本地路径，例如 D:/hf-cache/bge-reranker-base。"
+        )
     )
     RERANKER_MAX_LENGTH: int = Field(default=512, description="Max sequence length")
     RERANKER_BATCH_SIZE: int = Field(default=32, description="Batch size for inference")

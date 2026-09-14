@@ -82,17 +82,25 @@ def get_hybrid_retriever_instance():
     ``enable_reranker=True`` only permits the reranker to be lazily loaded;
     whether it actually runs is decided per call via ``retrieve(rerank=...)``.
     The two endpoints deliberately differ: the non-streaming one reranks
-    (the caller already waits for a full answer, so tens of extra
-    milliseconds are acceptable), while the streaming one does not
-    (time-to-first-token is what matters there).
+    (the caller already waits for a full answer, so a few extra seconds are
+    acceptable), while the streaming one does not (time-to-first-token is
+    what matters there).
 
-    Because the two share a single retriever instance, the rerank flag is
-    part of the search cache key — otherwise one endpoint would serve the
-    other's results.
+    ``reranker_model`` is taken from settings instead of the class default.
+    Both ``Reranker`` and ``HybridRetriever`` hard-code
+    ``cross-encoder/ms-marco-MiniLM-L-6-v2``, so ``RERANKER_MODEL`` used to
+    be a dead config knob — setting it changed nothing.  The choice matters:
+    that English model measurably *hurts* on this project's Chinese corpus
+    (see scripts/retrieval_experiment.py).
+
+    Because the two endpoints share one retriever instance, the rerank flag
+    is part of the search cache key — otherwise one would serve the other's
+    results.
     """
     return get_hybrid_retriever(
         collection_name=COLLECTION_NAME,
         enable_reranker=True,
+        reranker_model=_settings.RERANKER_MODEL,
         fusion_method="adaptive",
     )
 
@@ -554,9 +562,12 @@ async def query_rag(
 
     try:
         # Step 1: 混合检索 (带缓存)
-        # 精排由 settings.ENABLE_RERANK 控制，默认**关闭**：实测英文
-        # Cross-Encoder 在本项目中文语料上会拉低效果（HitRate@5 0.95→0.80，
-        # 耗时 21.6s→92.4s）。详见 retrieval_experiment.json。
+        # 精排由 settings.ENABLE_RERANK 控制。是否划算取决于
+        # settings.RERANKER_MODEL 的语言能力——实测（相对混合检索 RRF）：
+        #   英文 ms-marco-MiniLM-L-6-v2  HitRate 0.95→0.80  MRR -0.061  有害
+        #   中文 bge-reranker-base       HitRate 0.95→1.00  MRR +0.138
+        #   多语 bge-reranker-v2-m3      HitRate 0.95→1.00  MRR +0.246
+        # 详见 scripts/retrieval_experiment.py 与 retrieval_experiment_rerankers.json。
         search_results = await hybrid_search_cached(
             request.query, top_k=request.top_k, rerank=_settings.ENABLE_RERANK
         )
