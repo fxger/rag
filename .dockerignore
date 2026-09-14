@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.git/
+.github/
+.env
+.env.*
+.venv/
+venv/
+tests/
+docs/
+monitoring/
+scripts/
+config/
+*.md
+!README.md
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+htmlcov/
+.coverage

@@ -1,0 +1,7 @@
+数据模型 V2
+
+users: id, username, email, role, department
+documents: id, title, file_type, status, owner_id
+chunks: id, doc_id, content, embedding_id
+metadata: id, doc_id, key, value, source
+query_logs: id, user_id, query, response, latency

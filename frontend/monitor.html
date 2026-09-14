@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise RAG - 实时监控仪表板</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #eee; }
+        .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 20px; text-align: center; }
+        .header h1 { font-size: 24px; margin-bottom: 5px; }
+        .header p { opacity: 0.8; font-size: 14px; }
+        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+        .card { background: #16213e; border-radius: 12px; padding: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+        .card h3 { color: #667eea; margin-bottom: 15px; font-size: 16px; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .metric { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #2a2a4a; }
+        .metric:last-child { border-bottom: none; }
+        .metric-label { color: #aaa; font-size: 14px; }
+        .metric-value { font-size: 24px; font-weight: bold; color: #00d4aa; }
+        .metric-value.warning { color: #ffa500; }
+        .metric-value.danger { color: #ff4757; }
+        .status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+        .status.online { background: #00d4aa; }
+        .status.offline { background: #ff4757; }
+        .chart-container { height: 200px; background: #0f0f23; border-radius: 8px; margin-top: 15px; position: relative; overflow: hidden; }
+        .chart-bar { position: absolute; bottom: 0; background: linear-gradient(to top, #667eea, #764ba2); transition: height 0.3s; }
+        .refresh-btn { background: #667eea; color: white; border: none; padding: 10px 20px; border-radius: 6px; cursor: pointer; margin: 10px; }
+        .refresh-btn:hover { background: #5a6fd6; }
+        .timestamp { color: #666; font-size: 12px; text-align: center; margin-top: 20px; }
+        .large-value { font-size: 36px; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏢 Enterprise RAG 实时监控仪表板</h1>
+        <p>系统运行状态 | 自动刷新 (5秒)</p>
+    </div>
+    
+    <div class="container">
+        <div style="text-align: center; margin-bottom: 20px;">
+            <button class="refresh-btn" onclick="fetchMetrics()">🔄 手动刷新</button>
+            <span id="status" style="margin-left: 20px;"><span class="status online"></span>连接中...</span>
+        </div>
+        
+        <div class="grid">
+            <!-- HTTP 请求统计 -->
+            <div class="card">
+                <h3>📊 HTTP 请求统计</h3>
+                <div class="metric">
+                    <span class="metric-label">总请求数</span>
+                    <span class="metric-value large-value" id="total-requests">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">GET /health</span>
+                    <span class="metric-value" id="health-requests">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">GET /docs</span>
+                    <span class="metric-value" id="docs-requests">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">POST /query</span>
+                    <span class="metric-value" id="query-requests">-</span>
+                </div>
+            </div>
+            
+            <!-- 响应延迟 -->
+            <div class="card">
+                <h3>⏱️ 响应延迟</h3>
+                <div class="metric">
+                    <span class="metric-label">Health 平均延迟</span>
+                    <span class="metric-value" id="health-latency">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Query 平均延迟</span>
+                    <span class="metric-value" id="query-latency">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">延迟分布 (0-10ms)</span>
+                    <span class="metric-value" id="latency-fast">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">延迟分布 (10-50ms)</span>
+                    <span class="metric-value" id="latency-medium">-</span>
+                </div>
+            </div>
+            
+            <!-- 并发控制 -->
+            <div class="card">
+                <h3>🔄 并发控制</h3>
+                <div class="metric">
+                    <span class="metric-label">活跃任务数</span>
+                    <span class="metric-value" id="semaphore-active">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">等待队列</span>
+                    <span class="metric-value" id="semaphore-waiting">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">最大并发限制</span>
+                    <span class="metric-value" id="semaphore-max">-</span>
+                </div>
+            </div>
+            
+            <!-- 连接池 -->
+            <div class="card">
+                <h3>🔗 连接池状态</h3>
+                <div class="metric">
+                    <span class="metric-label">Milvus 池大小</span>
+                    <span class="metric-value" id="milvus-pool">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Milvus 活跃连接</span>
+                    <span class="metric-value" id="milvus-active">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Redis 池大小</span>
+                    <span class="metric-value" id="redis-pool">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">Redis 活跃连接</span>
+                    <span class="metric-value" id="redis-active">-</span>
+                </div>
+            </div>
+            
+            <!-- 重排序器 -->
+            <div class="card">
+                <h3>🎯 重排序器统计</h3>
+                <div class="metric">
+                    <span class="metric-label">总请求数</span>
+                    <span class="metric-value" id="reranker-total">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">推理次数</span>
+                    <span class="metric-value" id="reranker-inference">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">缓存命中</span>
+                    <span class="metric-value" id="reranker-cache">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">缓存大小</span>
+                    <span class="metric-value" id="reranker-size">-</span>
+                </div>
+            </div>
+            
+            <!-- 系统信息 -->
+            <div class="card">
+                <h3>💻 系统信息</h3>
+                <div class="metric">
+                    <span class="metric-label">应用版本</span>
+                    <span class="metric-value" id="app-version">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">运行环境</span>
+                    <span class="metric-value" id="app-env">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">内存使用</span>
+                    <span class="metric-value" id="memory-usage">-</span>
+                </div>
+                <div class="metric">
+                    <span class="metric-label">GC 次数</span>
+                    <span class="metric-value" id="gc-count">-</span>
+                </div>
+            </div>
+        </div>
+        
+        <!-- 请求历史图 -->
+        <div class="card" style="margin-top: 20px;">
+            <h3>📈 请求历史 (最近10次采样)</h3>
+            <div class="chart-container" id="request-chart"></div>
+        </div>
+        
+        <div class="timestamp" id="last-update">最后更新: -</div>
+    </div>
+    
+    <script>
+        const API_URL = 'http://localhost:8000/metrics';
+        let requestHistory = [];
+        let lastTotal = 0;
+        
+        async function fetchMetrics() {
+            try {
+                const response = await fetch(API_URL);
+                const text = await response.text();
+                parseMetrics(text);
+                document.getElementById('status').innerHTML = '<span class="status online"></span>连接正常';
+            } catch (error) {
+                document.getElementById('status').innerHTML = '<span class="status offline"></span>连接失败';
+                console.error('Fetch error:', error);
+            }
+        }
+        
+        function parseMetrics(text) {
+            const lines = text.split('\n');
+            const metrics = {};
+            
+            lines.forEach(line => {
+                if (line.startsWith('#') || line.trim() === '') return;
+                const match = line.match(/^([a-z_]+)\{?([^}]*)\}? (.+)$/);
+                if (match) {
+                    const [, name, labels, value] = match;
+                    if (!metrics[name]) metrics[name] = [];
+                    metrics[name].push({ labels, value: parseFloat(value) });
+                }
+            });
+            
+            // 计算总请求数
+            let totalRequests = 0;
+            let healthRequests = 0;
+            let docsRequests = 0;
+            let queryRequests = 0;
+            
+            if (metrics['rag_http_requests_total']) {
+                metrics['rag_http_requests_total'].forEach(m => {
+                    totalRequests += m.value;
+                    if (m.labels.includes('/health')) healthRequests = m.value;
+                    if (m.labels.includes('/docs')) docsRequests = m.value;
+                    if (m.labels.includes('/query')) queryRequests = m.value;
+                });
+            }
+            
+            // 更新 UI
+            document.getElementById('total-requests').textContent = totalRequests.toFixed(0);
+            document.getElementById('health-requests').textContent = healthRequests.toFixed(0);
+            document.getElementById('docs-requests').textContent = docsRequests.toFixed(0);
+            document.getElementById('query-requests').textContent = queryRequests.toFixed(0);
+            
+            // 延迟
+            if (metrics['rag_http_request_duration_seconds_sum'] && metrics['rag_http_request_duration_seconds_count']) {
+                const healthSum = metrics['rag_http_request_duration_seconds_sum'].find(m => m.labels.includes('/health'));
+                const healthCount = metrics['rag_http_request_duration_seconds_count'].find(m => m.labels.includes('/health'));
+                if (healthSum && healthCount && healthCount.value > 0) {
+                    document.getElementById('health-latency').textContent = ((healthSum.value / healthCount.value) * 1000).toFixed(2) + ' ms';
+                }
+            }
+            
+            // 并发控制
+            if (metrics['rag_semaphore_active']) {
+                document.getElementById('semaphore-active').textContent = metrics['rag_semaphore_active'][0].value.toFixed(0);
+            }
+            if (metrics['rag_semaphore_waiting']) {
+                document.getElementById('semaphore-waiting').textContent = metrics['rag_semaphore_waiting'][0].value.toFixed(0);
+            }
+            if (metrics['rag_semaphore_max_concurrent']) {
+                document.getElementById('semaphore-max').textContent = metrics['rag_semaphore_max_concurrent'][0].value.toFixed(0);
+            }
+            
+            // 连接池
+            if (metrics['rag_milvus_pool_size']) {
+                document.getElementById('milvus-pool').textContent = metrics['rag_milvus_pool_size'][0].value.toFixed(0);
+            }
+            if (metrics['rag_milvus_pool_active']) {
+                document.getElementById('milvus-active').textContent = metrics['rag_milvus_pool_active'][0].value.toFixed(0);
+            }
+            if (metrics['rag_redis_pool_size']) {
+                document.getElementById('redis-pool').textContent = metrics['rag_redis_pool_size'][0].value.toFixed(0);
+            }
+            if (metrics['rag_redis_pool_active']) {
+                document.getElementById('redis-active').textContent = metrics['rag_redis_pool_active'][0].value.toFixed(0);
+            }
+            
+            // 重排序器
+            if (metrics['rag_reranker_requests_total']) {
+                document.getElementById('reranker-total').textContent = metrics['rag_reranker_requests_total'][0].value.toFixed(0);
+            }
+            if (metrics['rag_reranker_inference_total']) {
+                document.getElementById('reranker-inference').textContent = metrics['rag_reranker_inference_total'][0].value.toFixed(0);
+            }
+            if (metrics['rag_reranker_cache_hits_total']) {
+                document.getElementById('reranker-cache').textContent = metrics['rag_reranker_cache_hits_total'][0].value.toFixed(0);
+            }
+            if (metrics['rag_reranker_cache_size']) {
+                document.getElementById('reranker-size').textContent = metrics['rag_reranker_cache_size'][0].value.toFixed(0);
+            }
+            
+            // 系统信息
+            if (metrics['rag_app_info']) {
+                const info = metrics['rag_app_info'][0];
+                document.getElementById('app-version').textContent = info.labels.match(/version="([^"]+)"/)?.[1] || '-';
+                document.getElementById('app-env').textContent = info.labels.match(/environment="([^"]+)"/)?.[1] || '-';
+            }
+            if (metrics['process_resident_memory_bytes']) {
+                const mem = metrics['process_resident_memory_bytes'][0].value / 1024 / 1024;
+                document.getElementById('memory-usage').textContent = mem.toFixed(1) + ' MB';
+            }
+            if (metrics['python_gc_collections_total']) {
+                const gc = metrics['python_gc_collections_total'].reduce((sum, m) => sum + m.value, 0);
+                document.getElementById('gc-count').textContent = gc.toFixed(0);
+            }
+            
+            // 更新图表
+            requestHistory.push(totalRequests);
+            if (requestHistory.length > 10) requestHistory.shift();
+            updateChart();
+            
+            // 更新时间
+            document.getElementById('last-update').textContent = '最后更新: ' + new Date().toLocaleTimeString();
+        }
+        
+        function updateChart() {
+            const chart = document.getElementById('request-chart');
+            const max = Math.max(...requestHistory, 1);
+            const width = 100 / requestHistory.length;
+            
+            chart.innerHTML = requestHistory.map((val, i) => 
+                `<div class="chart-bar" style="left: ${i * width}%; width: ${width - 1}%; height: ${(val / max) * 100}%;"></div>`
+            ).join('');
+        }
+        
+        // 初始加载
+        fetchMetrics();
+        
+        // 每5秒自动刷新
+        setInterval(fetchMetrics, 5000);
+    </script>
+</body>
+</html>

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Enterprise RAG System</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container { max-width: 900px; margin: 0 auto; }
+        .header { text-align: center; color: white; margin-bottom: 30px; }
+        .header h1 { font-size: 2.5em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.2); }
+        .header p { font-size: 1.1em; opacity: 0.9; }
+        .chat-container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .chat-header {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .chat-header h2 { font-size: 1.3em; }
+        .status-badge {
+            background: rgba(255,255,255,0.2);
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9em;
+        }
+        .chat-messages { height: 400px; overflow-y: auto; padding: 20px; background: #f8f9fa; }
+        .message { margin-bottom: 20px; animation: fadeIn 0.3s ease; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+        .message.user { text-align: right; }
+        .message.assistant { text-align: left; }
+        .message-content {
+            display: inline-block;
+            max-width: 80%;
+            padding: 12px 18px;
+            border-radius: 18px;
+            text-align: left;
+            line-height: 1.5;
+        }
+        .message.user .message-content {
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 5px;
+        }
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 5px;
+        }
+        .sources {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f0f4ff;
+            border-radius: 10px;
+            font-size: 0.85em;
+        }
+        .sources h4 { color: #667eea; margin-bottom: 5px; }
+        .source-item { color: #666; padding: 3px 0; }
+        .latency-info { margin-top: 8px; font-size: 0.8em; color: #999; }
+        .chat-input {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #eee;
+            display: flex;
+            gap: 10px;
+        }
+        .chat-input input {
+            flex: 1;
+            padding: 15px 20px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 1em;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+        .chat-input input:focus { border-color: #667eea; }
+        .chat-input button {
+            padding: 15px 30px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 25px;
+            font-size: 1em;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .chat-input button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+        .chat-input button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+        .typing-indicator { display: none; padding: 10px 20px; color: #999; font-style: italic; }
+        .typing-indicator.active { display: block; }
+        .cursor {
+            display: inline-block;
+            width: 2px;
+            height: 1em;
+            background: #667eea;
+            animation: blink 1s infinite;
+            vertical-align: text-bottom;
+            margin-left: 2px;
+        }
+        @keyframes blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+        .login-modal {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex; justify-content: center; align-items: center; z-index: 1000;
+        }
+        .login-modal.hidden { display: none; }
+        .login-box {
+            background: white; padding: 40px; border-radius: 20px;
+            width: 400px; box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        .login-box h2 { text-align: center; color: #333; margin-bottom: 30px; }
+        .form-group { margin-bottom: 20px; }
+        .form-group label { display: block; margin-bottom: 8px; color: #666; font-weight: 500; }
+        .form-group input {
+            width: 100%; padding: 12px 15px; border: 2px solid #e0e0e0;
+            border-radius: 10px; font-size: 1em; outline: none; transition: border-color 0.3s;
+        }
+        .form-group input:focus { border-color: #667eea; }
+        .login-btn {
+            width: 100%; padding: 15px;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            color: white; border: none; border-radius: 10px; font-size: 1.1em;
+            cursor: pointer; transition: transform 0.2s;
+        }
+        .login-btn:hover { transform: translateY(-2px); }
+        .error-msg { color: #e74c3c; text-align: center; margin-top: 15px; display: none; }
+        .stats-bar {
+            display: flex; justify-content: space-around; padding: 15px;
+            background: #f8f9fa; border-top: 1px solid #eee;
+        }
+        .stat-item { text-align: center; }
+        .stat-value { font-size: 1.5em; font-weight: bold; color: #667eea; }
+        .stat-label { font-size: 0.85em; color: #999; }
+    </style>
+</head>
+<body>
+    <div class="login-modal" id="loginModal">
+        <div class="login-box">
+            <h2>🔐 登录</h2>
+            <div class="form-group">
+                <label>用户名</label>
+                <input type="text" id="username" value="admin" placeholder="请输入用户名">
+            </div>
+            <div class="form-group">
+                <label>密码</label>
+                <input type="password" id="password" value="Admin123!" placeholder="请输入密码">
+            </div>
+            <button class="login-btn" onclick="login()">登 录</button>
+            <p class="error-msg" id="loginError">登录失败，请检查用户名和密码</p>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>🤖 Enterprise RAG System</h1>
+            <p>企业级知识库问答系统 - SSE 流式输出演示</p>
+        </div>
+        <div class="chat-container">
+            <div class="chat-header">
+                <h2>💬 知识库问答</h2>
+                <span class="status-badge" id="statusBadge">● 未连接</span>
+            </div>
+            <div class="chat-messages" id="chatMessages">
+                <div class="message assistant">
+                    <div class="message-content">
+                        👋 你好！我是企业知识库助手。请问我可以帮你查询什么？
+                        <br><br>
+                        <small>试试问：公司年收入是多少？| 员工手册内容？| 技术架构？</small>
+                    </div>
+                </div>
+            </div>
+            <div class="typing-indicator" id="typingIndicator">🤔 正在思考...</div>
+            <div class="chat-input">
+                <input type="text" id="queryInput" placeholder="输入你的问题..." onkeypress="if(event.key==='Enter')sendQuery()">
+                <button id="sendBtn" onclick="sendQuery()">发 送</button>
+            </div>
+            <div class="stats-bar">
+                <div class="stat-item">
+                    <div class="stat-value" id="searchTime">-</div>
+                    <div class="stat-label">搜索耗时</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="ttft">-</div>
+                    <div class="stat-label">首字延迟</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="totalTime">-</div>
+                    <div class="stat-label">总耗时</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let token = null;
+        let isGenerating = false;
+
+        const savedToken = localStorage.getItem('rag_token');
+        if (savedToken) {
+            token = savedToken;
+            document.getElementById('loginModal').classList.add('hidden');
+            document.getElementById('statusBadge').textContent = '● 已连接';
+            document.getElementById('statusBadge').style.background = 'rgba(76, 175, 80, 0.3)';
+        }
+
+        async function login() {
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/auth/auth/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await response.json();
+                if (data.success) {
+                    token = data.data.access_token;
+                    localStorage.setItem('rag_token', token);
+                    document.getElementById('loginModal').classList.add('hidden');
+                    document.getElementById('statusBadge').textContent = '● 已连接';
+                    document.getElementById('statusBadge').style.background = 'rgba(76, 175, 80, 0.3)';
+                } else {
+                    document.getElementById('loginError').style.display = 'block';
+                }
+            } catch (error) {
+                document.getElementById('loginError').textContent = '连接服务器失败';
+                document.getElementById('loginError').style.display = 'block';
+            }
+        }
+
+        async function sendQuery() {
+            if (isGenerating) return;
+            const input = document.getElementById('queryInput');
+            const query = input.value.trim();
+            if (!query) return;
+
+            addMessage(query, 'user');
+            input.value = '';
+            document.getElementById('typingIndicator').classList.add('active');
+            isGenerating = true;
+            document.getElementById('sendBtn').disabled = true;
+            document.getElementById('searchTime').textContent = '-';
+            document.getElementById('ttft').textContent = '-';
+            document.getElementById('totalTime').textContent = '-';
+
+            const startTime = performance.now();
+            let firstChunkTime = null;
+
+            try {
+                const response = await fetch('http://localhost:8000/api/v1/query/query/stream', {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${token}`,
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ query, top_k: 3 })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                let answerElement = null;
+                let fullAnswer = '';
+                let sources = [];
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    const text = decoder.decode(value);
+                    const lines = text.split('\n');
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const dataStr = line.substring(6);
+                            try {
+                                const data = JSON.parse(dataStr);
+                                if (data.latency_search_ms !== undefined) {
+                                    document.getElementById('searchTime').textContent = data.latency_search_ms + 'ms';
+                                    sources = data.sources || [];
+                                }
+                                if (data.content) {
+                                    if (!firstChunkTime) {
+                                        firstChunkTime = performance.now() - startTime;
+                                        document.getElementById('ttft').textContent = Math.round(firstChunkTime) + 'ms';
+                                        document.getElementById('typingIndicator').classList.remove('active');
+                                        const msgDiv = document.createElement('div');
+                                        msgDiv.className = 'message assistant';
+                                        msgDiv.innerHTML = '<div class="message-content" id="answerContent"></div>';
+                                        document.getElementById('chatMessages').appendChild(msgDiv);
+                                        answerElement = document.getElementById('answerContent');
+                                    }
+                                    fullAnswer += data.content;
+                                    answerElement.innerHTML = formatText(fullAnswer) + '<span class="cursor"></span>';
+                                    scrollToBottom();
+                                }
+                                if (data.status === 'completed') {
+                                    const totalTimeMs = performance.now() - startTime;
+                                    document.getElementById('totalTime').textContent = Math.round(totalTimeMs) + 'ms';
+                                    if (answerElement) {
+                                        let html = formatText(fullAnswer);
+                                        if (sources.length > 0) {
+                                            html += '<div class="sources"><h4>📚 参考文档</h4>';
+                                            sources.forEach((s, i) => {
+                                                html += `<div class="source-item">${i+1}. ${s.content.substring(0, 80)}... (${(s.score * 100).toFixed(1)}%)</div>`;
+                                            });
+                                            html += '</div>';
+                                        }
+                                        html += `<div class="latency-info">⚡ 搜索: ${document.getElementById('searchTime').textContent} | 首字: ${document.getElementById('ttft').textContent} | 总计: ${document.getElementById('totalTime').textContent}</div>`;
+                                        answerElement.innerHTML = html;
+                                    }
+                                }
+                                if (data.error && answerElement) {
+                                    answerElement.innerHTML = `<span style="color: #e74c3c;">❌ 错误: ${data.error}</span>`;
+                                }
+                            } catch (e) { console.error('Parse error:', e); }
+                        }
+                    }
+                }
+            } catch (error) {
+                addMessage(`❌ 请求失败: ${error.message}`, 'assistant');
+            }
+
+            document.getElementById('typingIndicator').classList.remove('active');
+            isGenerating = false;
+            document.getElementById('sendBtn').disabled = false;
+        }
+
+        function addMessage(text, type) {
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${type}`;
+            msgDiv.innerHTML = `<div class="message-content">${formatText(text)}</div>`;
+            document.getElementById('chatMessages').appendChild(msgDiv);
+            scrollToBottom();
+        }
+
+        function formatText(text) {
+            return text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+        }
+
+        function scrollToBottom() {
+            const container = document.getElementById('chatMessages');
+            container.scrollTop = container.scrollHeight;
+        }
+    </script>
+</body>
+</html>

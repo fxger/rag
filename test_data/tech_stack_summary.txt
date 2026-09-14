@@ -1,0 +1,7 @@
+技术栈总结
+
+后端：Python/FastAPI, Go, Node.js
+前端：React, TypeScript, TailwindCSS
+数据库：PostgreSQL, Redis, Milvus, MinIO
+基础设施：Docker, K8s, Prometheus, Grafana
+AI：OpenAI, DeepSeek, sentence-transformers

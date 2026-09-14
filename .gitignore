@@ -1,0 +1,72 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+
+# Docker
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Data
+data/
+*.csv
+*.json
+!config/*.json
+
+# Model cache
+models/
+.cache/
+
+# ── 敏感凭证：禁止入库 ───────────────────────────────────────────
+# VM_CONFIGURATION.md 含 SSH 密码、PostgreSQL/MinIO 口令、DeepSeek API Key
+# 等全部明文凭证，仅供本地运维参考，绝不能进入版本控制。
+docs/VM_CONFIGURATION.md
+.secrets/
+credentials.md
+*_credentials.md
+*.pem
+*.key
+*.p12
