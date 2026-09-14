@@ -70,3 +70,8 @@ credentials.md
 *.pem
 *.key
 *.p12
+
+# 手工备份与合并残留（.bak 曾两次被误提交）
+*.bak
+*.orig
+*.rej
