@@ -161,15 +161,20 @@ class ThreadSafeReranker:
         self,
         pairs: list[tuple[str, str]],
         timeout: float = 30.0,
-    ) -> list[float]:
+    ) -> list[float] | None:
         """Thread-safe prediction with concurrency control.
-        
+
         Args:
             pairs: List of (query, document) pairs.
             timeout: Maximum wait time for semaphore.
-            
+
         Returns:
-            List of relevance scores.
+            Relevance scores, or ``None`` when the model is unavailable or
+            the semaphore times out.  Callers must treat ``None`` as "keep
+            the original ranking" — an earlier version returned
+            ``[0.0] * len(pairs)`` here, which the log line described as
+            falling back to the original scores while actually scrambling
+            them.
         """
         with self._stats_lock:
             self._total_requests += 1

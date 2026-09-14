@@ -85,13 +85,22 @@ class RAGService:
         timings["embedding_ms"] = int((time.monotonic() - embed_start) * 1000)
 
         # Step 2: Hybrid retrieval
+        #
+        # ``retrieve()`` returns a RetrievalResult wrapper, but the context
+        # builder expects a plain list of SearchResult.  Unwrap here so the
+        # success and failure paths hand downstream the same type.
+        # Previously the success path passed the wrapper (which has no
+        # __len__) and the error path passed [], so the TypeError raised by
+        # len() was swallowed by the except clause below and the whole
+        # pipeline quietly degraded to "No relevant documents found."
         retrieval_start = time.monotonic()
         try:
-            results = await self.retriever.retrieve(
+            retrieval = await self.retriever.retrieve(
                 query=query,
                 embedding=query_embedding,
                 top_k=top_k,
             )
+            results = retrieval.results
             timings["retrieval_ms"] = int((time.monotonic() - retrieval_start) * 1000)
             logger.info("Retrieved %d results", len(results))
         except Exception as e:
@@ -184,12 +193,15 @@ class RAGService:
             await embedding_cache.set(query_hash, query_embedding)
 
         # Step 2: Hybrid retrieval
+        # Same unwrapping as the non-streaming path: the context builder
+        # enumerates the results, and a RetrievalResult is not iterable.
         try:
-            results = await self.retriever.retrieve(
+            retrieval = await self.retriever.retrieve(
                 query=query,
                 embedding=query_embedding,
                 top_k=top_k,
             )
+            results = retrieval.results
         except Exception as e:
             logger.error("Retrieval failed during streaming query: %s", e)
             results = []
