@@ -1,5 +1,7 @@
 """Document processing pipeline — parse, clean, chunk, persist."""
+import asyncio
 import logging
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,7 +57,15 @@ class DocumentProcessor:
         temp_dir: str | None = None,
     ):
         settings = get_settings()
-        self._temp_dir = Path(temp_dir or settings.get("TEMP_DIR", "/tmp/rag_uploads"))
+        # Settings is a pydantic model, not a dict: settings.get(...) raised
+        # AttributeError, so this class could never be constructed.  The old
+        # "/tmp/..." default was also wrong on Windows, where it resolves
+        # against the current drive root.
+        self._temp_dir = Path(
+            temp_dir
+            or settings.TEMP_DIR
+            or str(Path(tempfile.gettempdir()) / "rag_uploads")
+        )
         self._temp_dir.mkdir(parents=True, exist_ok=True)
 
         self._chunker = SmartChunker(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
@@ -90,13 +100,21 @@ class DocumentProcessor:
             # Mark as processing
             await self._update_status(document_id, DocumentStatus.PROCESSING)
 
-            # 2. Download from MinIO
-            local_path = self._temp_dir / f"{document_id}_{doc.file_name}"
-            download_file(doc.storage_path, str(local_path))
+            # 2. Download from MinIO (the ORM names these title / file_path;
+            #    the synchronous client is pushed off the event loop)
+            local_path = self._temp_dir / f"{document_id}_{doc.title}"
+            await asyncio.to_thread(download_file, doc.file_path, str(local_path))
 
             # 3. Parse
-            file_ext = Path(doc.file_name).suffix.lstrip(".").lower()
-            file_type = file_ext or doc.file_type.value if hasattr(doc.file_type, "value") else str(doc.file_type)
+            # NB: the parentheses matter — without them this parses as
+            # `(file_ext or value) if hasattr(...) else str(...)`, which
+            # discards the extension whenever file_type has no `.value`.
+            file_ext = Path(doc.title).suffix.lstrip(".").lower()
+            file_type = file_ext or (
+                doc.file_type.value
+                if hasattr(doc.file_type, "value")
+                else str(doc.file_type)
+            )
 
             parser = get_parser(file_type)
             parsed = await parser.parse(str(local_path))

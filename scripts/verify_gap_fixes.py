@@ -243,9 +243,19 @@ def check_a1() -> None:
     src = (ROOT / "src/api/v1/query.py").read_text(encoding="utf-8")
     assert "enable_reranker=True" in src, "检索器仍禁止加载重排器"
     assert "enable_reranker=False" not in src, "仍有位置关闭重排器加载"
-    assert "rerank=True" in src, "非流式端点未开启重排"
+    assert "ENABLE_RERANK" in src, "非流式端点未接入精排配置开关"
+    assert "rerank=True" not in src, "仍有硬编码开启精排的位置"
     assert "rerank=False" in src, "流式端点未显式关闭重排"
-    _ok("A1 重排开关", "enable_reranker=True；非流式 rerank=True / 流式 rerank=False；缓存 key 隔离")
+
+    from src.config.settings import get_settings
+
+    assert get_settings().ENABLE_RERANK is False, (
+        "ENABLE_RERANK 默认应为关闭：实测英文 Cross-Encoder 在中文语料上降低命中率"
+    )
+    _ok(
+        "A1 重排开关",
+        "开关默认关闭（实测无效，见 retrieval_experiment.json）；流式显式关闭；缓存 key 隔离",
+    )
 
 
 def check_a2() -> None:

@@ -139,6 +139,18 @@ RERANKER_CACHE_SIZE = Gauge(
 )
 
 # ═══════════════════════════════════════════════════════════════════
+# 熔断器指标
+# ═══════════════════════════════════════════════════════════════════
+
+CIRCUIT_BREAKER_STATE = Gauge(
+    "rag_circuit_breaker_state",
+    "Circuit breaker state (0=closed, 1=half_open, 2=open)",
+    ["name"],
+)
+
+_CIRCUIT_STATE_VALUES = {"closed": 0, "half_open": 1, "open": 2}
+
+# ═══════════════════════════════════════════════════════════════════
 # 连接池指标
 # ═══════════════════════════════════════════════════════════════════
 
@@ -270,6 +282,17 @@ def update_concurrent_metrics():
                 REDIS_POOL_ACTIVE.set(pool_stats.get("active", 0))
     except Exception as e:
         logger.warning("Failed to update pool metrics: %s", e)
+
+    try:
+        # Imported lazily — query.py imports this module, so a module-level
+        # import here would be circular.
+        from src.api.v1.query import _llm_breaker
+
+        CIRCUIT_BREAKER_STATE.labels(name=_llm_breaker.name).set(
+            _CIRCUIT_STATE_VALUES.get(_llm_breaker.state.value, -1)
+        )
+    except Exception as e:
+        logger.debug("Circuit breaker metric unavailable: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════

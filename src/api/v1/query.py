@@ -548,14 +548,17 @@ async def query_rag(
     request: QueryRequest,
     current_user: dict = Depends(get_current_user),
 ) -> Any:
-    """Execute a RAG query (非流式): Hybrid Retrieval → 精排 → DeepSeek AI."""
+    """Execute a RAG query (非流式): Hybrid Retrieval → (可选精排) → DeepSeek AI."""
     start_time = time.time()
     status = "success"
 
     try:
-        # Step 1: 混合检索 (带缓存；非流式启用 Cross-Encoder 精排)
+        # Step 1: 混合检索 (带缓存)
+        # 精排由 settings.ENABLE_RERANK 控制，默认**关闭**：实测英文
+        # Cross-Encoder 在本项目中文语料上会拉低效果（HitRate@5 0.95→0.80，
+        # 耗时 21.6s→92.4s）。详见 retrieval_experiment.json。
         search_results = await hybrid_search_cached(
-            request.query, top_k=request.top_k, rerank=True
+            request.query, top_k=request.top_k, rerank=_settings.ENABLE_RERANK
         )
 
         # Step 2: 构建上下文

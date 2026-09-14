@@ -1,0 +1,206 @@
+# Prometheus 告警规则 —— Enterprise RAG System
+#
+# 覆盖四类风险：可用性、延迟、检索/缓存质量、下游依赖与熔断。
+# 所有表达式都基于 src/api/metrics.py 中真实定义并已埋点的指标，
+# 不使用未暴露的指标名（否则规则会恒为 inactive，形同虚设）。
+#
+# 需在 prometheus.yml 中通过 rule_files 引入。
+
+groups:
+  # ═══════════════════════════════════════════════════════════════
+  # 1. 可用性
+  # ═══════════════════════════════════════════════════════════════
+  - name: rag_availability
+    interval: 30s
+    rules:
+      - alert: RagApiDown
+        expr: up{job="enterprise-rag-api"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RAG API 无响应"
+          description: "Prometheus 已连续 1 分钟抓取不到 {{ $labels.instance }} 的 /metrics。"
+
+      - alert: RagHighErrorRate
+        expr: |
+          sum(rate(rag_http_requests_total{status_code=~"5.."}[5m]))
+            /
+          sum(rate(rag_http_requests_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx 比例超过 5%"
+          description: "近 5 分钟 5xx 占比 {{ $value | humanizePercentage }}。"
+
+      - alert: RagQueryFailureSpike
+        expr: |
+          sum(rate(rag_query_total{status="error"}[5m]))
+            /
+          sum(rate(rag_query_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG 查询失败率超过 10%"
+          description: "近 5 分钟查询失败占比 {{ $value | humanizePercentage }}。"
+
+  # ═══════════════════════════════════════════════════════════════
+  # 2. 延迟（各阶段分开看，便于定位瓶颈在检索还是生成）
+  # ═══════════════════════════════════════════════════════════════
+  - name: rag_latency
+    interval: 30s
+    rules:
+      - alert: RagQuerySlowP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(rag_query_duration_seconds_bucket[5m])) by (le)
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RAG 查询 P95 超过 5s"
+          description: "当前 P95 = {{ $value | humanizeDuration }}。生成阶段通常是主要来源。"
+
+      - alert: RagRetrievalSlowP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(rag_retrieval_duration_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "检索阶段 P95 超过 1s"
+          description: "当前 P95 = {{ $value | humanizeDuration }}。检查 Milvus 与连接池状态。"
+
+      - alert: RagRerankSlowP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(rag_rerank_duration_seconds_bucket[5m])) by (le)
+          ) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "重排阶段 P95 超过 2s"
+          description: "Cross-Encoder 推理偏慢；检查 rag_semaphore_waiting 是否堆积。"
+
+      - alert: RagGenerationSlowP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(rag_generation_duration_seconds_bucket[5m])) by (le)
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "生成阶段 P95 超过 10s"
+          description: "上游 LLM 响应变慢，注意是否触发了 p95 延迟告警联动。"
+
+  # ═══════════════════════════════════════════════════════════════
+  # 3. 检索与缓存质量
+  # ═══════════════════════════════════════════════════════════════
+  - name: rag_quality
+    interval: 60s
+    rules:
+      - alert: RagCacheHitRateLow
+        expr: |
+          sum(rate(rag_cache_hits_total[10m]))
+            /
+          (sum(rate(rag_cache_hits_total[10m])) + sum(rate(rag_cache_misses_total[10m]))) < 0.3
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "缓存命中率低于 30%"
+          description: "当前命中率 {{ $value | humanizePercentage }}。可能是查询基数变大或缓存被淘汰。"
+
+      - alert: RagRetrievalResultsEmpty
+        expr: |
+          histogram_quantile(
+            0.5,
+            sum(rate(rag_retrieval_results_count_bucket[10m])) by (le)
+          ) == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "检索中位数返回 0 条结果"
+          description: "检索持续无结果，通常意味着向量库为空或索引未加载。"
+
+      - alert: RagRerankSemaphoreSaturated
+        expr: rag_semaphore_active >= rag_semaphore_max_concurrent
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "重排信号量已打满"
+          description: "并发推理达到上限（{{ $value }}），后续请求将等待或降级。"
+
+  # ═══════════════════════════════════════════════════════════════
+  # 4. 下游依赖与熔断
+  # ═══════════════════════════════════════════════════════════════
+  - name: rag_resilience
+    interval: 30s
+    rules:
+      - alert: RagCircuitBreakerOpen
+        expr: rag_circuit_breaker_state{name="deepseek"} == 2
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LLM 熔断器已打开"
+          description: "连续失败触发熔断，请求正被拒绝。检查 DeepSeek 服务状态与 API Key 配额。"
+
+      - alert: RagCircuitBreakerHalfOpen
+        expr: rag_circuit_breaker_state{name="deepseek"} == 1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM 熔断器停留在半开状态"
+          description: "半开超过 5 分钟未能恢复，说明下游仍未稳定。"
+
+      - alert: RagMilvusPoolExhausted
+        expr: rag_milvus_pool_active >= rag_milvus_pool_size
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Milvus 连接池接近耗尽"
+          description: "活跃连接已占满可用连接，可能开始排队。"
+
+  # ═══════════════════════════════════════════════════════════════
+  # 5. 文档处理流水线
+  # ═══════════════════════════════════════════════════════════════
+  - name: rag_documents
+    interval: 60s
+    rules:
+      - alert: RagDocumentProcessingFailures
+        expr: increase(rag_documents_failed_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "文档处理连续失败"
+          description: "15 分钟内失败 {{ $value }} 次。检查解析器兼容性与 MinIO / Milvus 可用性。"
+
+      - alert: RagDocumentProcessingSlow
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(rag_document_processing_duration_seconds_bucket[15m])) by (le)
+          ) > 60
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "文档处理 P95 超过 60s"
+          description: "当前 P95 = {{ $value | humanizeDuration }}，大文件或向量化服务可能变慢。"

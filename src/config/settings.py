@@ -67,6 +67,24 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = Field(default="rag-documents")
     MINIO_SECURE: bool = Field(default=False)
 
+    # ── 文档处理 ────────────────────────────────────────────────────
+    TEMP_DIR: str = Field(
+        default="",
+        description="上传中转目录；留空则使用系统临时目录",
+    )
+
+    # ── 检索增强开关 ────────────────────────────────────────────────
+    ENABLE_RERANK: bool = Field(
+        default=False,
+        description=(
+            "对非流式查询启用 Cross-Encoder 精排。默认关闭。"
+            "原因：实测 ms-marco-MiniLM-L-6-v2（英文模型）在本项目中文语料上"
+            "会拉低效果（HitRate@5 0.95→0.80，耗时 21.6s→92.4s）。"
+            "详见 scripts/retrieval_experiment.py 与 retrieval_experiment.json。"
+            "换用中文 Cross-Encoder（如 BAAI/bge-reranker-base）后可重新评估。"
+        ),
+    )
+
     # ── OpenAI / DeepSeek ───────────────────────────────────────────
     OPENAI_API_KEY: str = Field(default="your-api-key")
     OPENAI_BASE_URL: Optional[str] = Field(default=None)

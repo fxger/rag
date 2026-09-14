@@ -1,0 +1,50 @@
+{
+  "generated_at": "2026-09-14T14:01:53",
+  "collection": "enterprise_rag_capacity",
+  "synthetic_vectors": true,
+  "index": {
+    "type": "IVF_FLAT",
+    "metric": "COSINE",
+    "nlist": 1024,
+    "nprobe": 16
+  },
+  "embedding_dim": 3072,
+  "stages": [
+    {
+      "p50_ms": 10.66,
+      "p95_ms": 421.33,
+      "p99_ms": 421.33,
+      "mean_ms": 91.89,
+      "samples": 5,
+      "corpus_size": 500,
+      "ingest_s": 3.7
+    },
+    {
+      "p50_ms": 15.53,
+      "p95_ms": 20.07,
+      "p99_ms": 20.07,
+      "mean_ms": 15.81,
+      "samples": 5,
+      "corpus_size": 2000,
+      "ingest_s": 6.6
+    },
+    {
+      "p50_ms": 35.59,
+      "p95_ms": 66.44,
+      "p99_ms": 66.44,
+      "mean_ms": 38.64,
+      "samples": 5,
+      "corpus_size": 5000,
+      "ingest_s": 12.9
+    },
+    {
+      "p50_ms": 18.66,
+      "p95_ms": 339.61,
+      "p99_ms": 339.61,
+      "mean_ms": 83.35,
+      "samples": 5,
+      "corpus_size": 10000,
+      "ingest_s": 21.5
+    }
+  ]
+}
