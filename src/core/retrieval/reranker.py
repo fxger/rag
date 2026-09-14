@@ -57,6 +57,16 @@ class Reranker:
         # saturated reranker would stall every other request too.
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
+        self.max_concurrent = max_concurrent
+        # Counters exposed through ``stats`` for Prometheus scraping.  The
+        # reranker is a process-wide singleton and every mutation happens on
+        # the event loop, so plain ints are sufficient.
+        self._total_requests = 0
+        self._cache_hits = 0
+        self._cache_misses = 0
+        self._inference_count = 0
+        self._active = 0
+
         if cache_enabled:
             from cachetools import LRUCache
             self._cache = LRUCache(maxsize=cache_maxsize)
@@ -134,6 +144,8 @@ class Reranker:
         """Rerank documents based on query-document relevance."""
         if not documents:
             return []
+
+        self._total_requests += 1
         
         # Check cache first
         doc_ids = [doc.chunk_id for doc in documents]
@@ -141,8 +153,10 @@ class Reranker:
             cache_key = self._get_cache_key(query, doc_ids)
             cached_result = self._cache.get(cache_key)
             if cached_result is not None:
+                self._cache_hits += 1
                 logger.debug("Rerank cache hit")
                 return cached_result[:top_n] if top_n else cached_result
+            self._cache_misses += 1
         
         # Load the model off the event loop: the first load reads weights
         # from disk and can take seconds, which would freeze every other
@@ -182,6 +196,8 @@ class Reranker:
             logger.warning("Semaphore timeout during reranking, falling back")
             return self._fallback_rerank(documents, top_n)
 
+        self._inference_count += 1
+        self._active += 1
         try:
             pairs = [(query, doc.content[:self.max_length]) for doc in documents]
 
@@ -192,6 +208,7 @@ class Reranker:
                 show_progress_bar=False,
             )
         finally:
+            self._active -= 1
             self._semaphore.release()
         
         import numpy as np
@@ -234,6 +251,26 @@ class Reranker:
         for rank, result in enumerate(results, start=1):
             result.rank = rank
         return results[:top_n] if top_n else results
+
+    @property
+    def stats(self) -> dict:
+        """Runtime statistics consumed by the Prometheus collector.
+
+        ``src.api.metrics.update_concurrent_metrics`` reads these keys —
+        treat the names as a contract and keep both sides in sync.
+        """
+        return {
+            "model_name": self.model_name,
+            "model_loaded": self._model_loaded,
+            "total_requests": self._total_requests,
+            "cache_hits": self._cache_hits,
+            "cache_misses": self._cache_misses,
+            "cache_size": len(self._cache) if self._cache is not None else 0,
+            "inference_count": self._inference_count,
+            "active": self._active,
+            "waiting": 0,
+            "max_concurrent": self.max_concurrent,
+        }
 
     def is_available(self) -> bool:
         """Check if reranker model is available."""

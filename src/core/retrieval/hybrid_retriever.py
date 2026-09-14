@@ -179,12 +179,20 @@ class HybridRetriever:
         # Step 5: Rerank if enabled
         reranked = False
         if rerank and self.reranker and fused_results:
+            rerank_start = time.time()
             final_results = await self.reranker.rerank(
                 query,
                 fused_results,
                 top_n=rerank_top_n,
             )
             reranked = True
+            # Imported lazily: metrics are a cross-cutting concern, and a
+            # module-level import would make the retrieval layer depend on
+            # the API layer from the moment it is imported.
+            # TODO: move the metric definitions to src/core/observability so
+            # the dependency points in the right direction.
+            from src.api.metrics import RAG_RERANK_DURATION
+            RAG_RERANK_DURATION.observe(time.time() - rerank_start)
         else:
             final_results = fused_results[:top_k]
             for rank, result in enumerate(final_results, start=1):

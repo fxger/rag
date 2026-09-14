@@ -396,20 +396,26 @@ class SingletonManager:
                     
                     def factory():
                         from src.config.settings import get_settings
+
                         settings = get_settings()
+                        # pymilvus registers connections process-wide by
+                        # alias, and Collection() attaches to "default".  This
+                        # used to connect under f"pool_{thread_id}", so the
+                        # pooled connection was never the one retrieval used.
                         connections.connect(
-                            alias=f"pool_{id(threading.current_thread())}",
+                            alias="default",
                             host=settings.MILVUS_HOST,
                             port=str(settings.MILVUS_PORT),
                         )
                         collection = Collection(collection_name)
                         collection.load()
                         return collection
-                    
+
                     def health_check(conn):
                         try:
-                            conn.num_entities
-                            return True
+                            # Cheap probe. num_entities runs a statistic on the
+                            # collection and is too heavy for a release path.
+                            return connections.has_connection("default")
                         except Exception:
                             return False
                     

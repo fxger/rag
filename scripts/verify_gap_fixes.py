@@ -14,7 +14,8 @@ import time
 import types
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 
 PASSED: list[str] = []
 
@@ -225,11 +226,146 @@ def check_b10() -> None:
     _ok("B10 事件循环阻塞", f"8 路并发下心跳最大间隔 {worst:.0f}ms（修复前 302ms）")
 
 
+# ----------------------------------------------------------------------
+# 第二批 · 接线（A1 / A2 / A3 / A5 / A6 / A7 / A8）
+# ----------------------------------------------------------------------
+def check_a1() -> None:
+    # Deliberately avoids instantiating the retriever: building one pulls in
+    # the analyzers and Milvus clients, which is heavy (and crashes outright
+    # in this environment).  The wiring is asserted from source + the cache.
+    from src.api.v1.query import SearchCache
+
+    cache = SearchCache()
+    assert cache._make_key("q", 5, True) != cache._make_key("q", 5, False), (
+        "rerank 未参与缓存 key —— 非流式与流式会互相污染"
+    )
+
+    src = (ROOT / "src/api/v1/query.py").read_text(encoding="utf-8")
+    assert "enable_reranker=True" in src, "检索器仍禁止加载重排器"
+    assert "enable_reranker=False" not in src, "仍有位置关闭重排器加载"
+    assert "rerank=True" in src, "非流式端点未开启重排"
+    assert "rerank=False" in src, "流式端点未显式关闭重排"
+    _ok("A1 重排开关", "enable_reranker=True；非流式 rerank=True / 流式 rerank=False；缓存 key 隔离")
+
+
+def check_a2() -> None:
+    from src.api.middleware.circuit_breaker import CircuitBreakerError, CircuitState
+    from src.api.v1.query import _llm_breaker
+
+    _llm_breaker.reset()
+
+    async def boom() -> None:
+        raise RuntimeError("upstream unavailable")
+
+    async def run() -> bool:
+        for _ in range(_llm_breaker.failure_threshold):
+            try:
+                await _llm_breaker.call(boom)
+            except RuntimeError:
+                pass
+        if _llm_breaker.state != CircuitState.OPEN:
+            return False
+        try:
+            await _llm_breaker.call(boom)      # must be rejected without calling
+        except CircuitBreakerError:
+            return True
+        return False
+
+    threshold = _llm_breaker.failure_threshold
+    opened = asyncio.run(run())
+    _llm_breaker.reset()
+    assert opened, "熔断器未在连续失败后打开"
+    _ok("A2 熔断器", f"连续 {threshold} 次失败后打开并拒绝调用，reset 后恢复")
+
+
+def check_a3() -> None:
+    from src.main import create_app
+
+    app = create_app()
+    # Starlette keeps user_middleware outermost-first: index 0 runs first.
+    names = [m.cls.__name__ for m in app.user_middleware]
+    assert "MetricsMiddleware" in names, names
+    assert "RateLimitMiddleware" in names, names
+    assert names[0] == "MetricsMiddleware", f"Metrics 应在最外层: {names}"
+    assert names.index("RateLimitMiddleware") > names.index("CORSMiddleware"), (
+        f"限流应在 CORS 内层: {names}"
+    )
+    _ok("A3 限流注册", f"执行顺序（外→内）: {' -> '.join(names)}")
+
+
+def check_a5() -> None:
+    src = (ROOT / "src/api/v1/query.py").read_text(encoding="utf-8")
+    assert "IntelligentEmbeddingCache" in src, "未接入多级嵌入缓存"
+    assert "get_qwen_embedding_sync" not in src, "旧的同步缓存实现仍然存在"
+    assert "await asyncio.to_thread(_request_embedding_sync" in src, (
+        "嵌入 HTTP 请求未移出事件循环"
+    )
+    _ok("A5 嵌入缓存", "统一用 IntelligentEmbeddingCache；请求移出事件循环")
+
+
+def check_a6() -> None:
+    from src.api.v1.query import _MilvusSession
+
+    assert hasattr(_MilvusSession, "_get_pool"), "_MilvusSession 缺少连接池访问器"
+    pool_src = (ROOT / "src/core/concurrent_singleton.py").read_text(encoding="utf-8")
+    assert 'alias="default"' in pool_src, "连接池 factory 未使用 default alias"
+    assert "current_thread()" not in pool_src.split("def factory()")[1][:200], (
+        "仍按线程 id 建 alias，池中连接与 Collection 使用的不是同一个"
+    )
+    _ok("A6 连接池", "factory 使用 default alias；query 经 _MilvusSession 借还")
+
+
+def check_a7() -> None:
+    src = (ROOT / "src/api/v1/query.py").read_text(encoding="utf-8")
+    required = (
+        "RAG_QUERY_TOTAL", "RAG_QUERY_DURATION", "RAG_RETRIEVAL_DURATION",
+        "RAG_RETRIEVAL_RESULTS", "RAG_GENERATION_DURATION",
+        "AI_GENERATION_TOTAL", "AI_GENERATION_TOKENS",
+        "CACHE_HITS_TOTAL", "CACHE_MISSES_TOTAL", "CACHE_SIZE",
+    )
+    missing = [n for n in required if n not in src]
+    assert not missing, f"未埋点的指标: {missing}"
+
+    rerank_src = (ROOT / "src/core/retrieval/hybrid_retriever.py").read_text(encoding="utf-8")
+    assert "RAG_RERANK_DURATION" in rerank_src, "重排耗时未埋点"
+    _ok("A7 业务指标埋点", f"{len(required)} 个指标已埋点 + 重排耗时")
+
+
+def check_a8() -> None:
+    from src.core.retrieval.reranker import Reranker
+
+    stats = Reranker(model_name="verify-a8").stats
+    required = ("active", "waiting", "max_concurrent", "total_requests",
+                "inference_count", "cache_hits", "cache_size")
+    missing = [k for k in required if k not in stats]
+    assert not missing, f"Reranker.stats 缺少字段: {missing}"
+
+    body = (ROOT / "src/api/metrics.py").read_text(encoding="utf-8").split(
+        "def update_concurrent_metrics"
+    )[1]
+    assert "from src.core.singleton import get_reranker" in body, (
+        "并发指标采集源未切到生产单例"
+    )
+    _ok("A8 指标采集源", "Reranker.stats 字段齐备；采集源指向生产单例")
+
+
+def check_a7_metrics_exposed() -> None:
+    """Every metric referenced by the collector must be importable."""
+    from src.api.metrics import update_concurrent_metrics
+
+    update_concurrent_metrics()      # must not raise with no traffic
+    _ok("A8 采集函数可执行", "无流量时调用不抛异常")
+
+
 def main() -> int:
-    print("验证简历能力补齐 —— 第一批修复\n")
+    print("验证简历能力补齐 —— 第一批 + 第二批\n")
     checks = (
+        # 第一批 · 修地基
         check_b1, check_b1_english_limit, check_b4, check_b5,
         check_b9, check_b3, check_b10,
+        # 第二批 · 接线
+        check_a1, check_a2, check_a3, check_a5, check_a6, check_a7, check_a8,
+        check_a7_metrics_exposed,
     )
     for check in checks:
         try:

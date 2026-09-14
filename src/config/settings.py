@@ -53,6 +53,13 @@ class Settings(BaseSettings):
     MILVUS_COLLECTION: str = Field(default="enterprise_rag")
     MILVUS_DIMENSION: int = Field(default=1024, description="Qwen embedding dim")
 
+    # ── Qwen Embedding (VM1: 192.168.86.132) ────────────────────────
+    QWEN_EMBED_URL: str = Field(
+        default="http://192.168.86.132:8000/v1/embeddings",
+        description="OpenAI-compatible embedding endpoint",
+    )
+    QWEN_EMBED_MODEL: str = Field(default="qwen-embedding")
+
     # ── MinIO (VM1: 192.168.86.132) ─────────────────────────────────
     MINIO_ENDPOINT: str = Field(default="192.168.86.132:9000")
     MINIO_ACCESS_KEY: str = Field(default="minioadmin")

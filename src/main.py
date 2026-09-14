@@ -140,7 +140,20 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # ── CORS Middleware ──────────────────────────────────────────────
+    # Middleware are registered outermost-*last*: Starlette builds the stack
+    # in reverse, so whichever is added last runs first.  The intended
+    # execution order is  Metrics → CORS → RateLimit → route,  which means
+    # they are registered below in exactly the opposite order.
+
+    # ── Rate limiting (innermost) ────────────────────────────────────
+    from src.api.middleware.rate_limiter import RateLimitMiddleware
+    app.add_middleware(
+        RateLimitMiddleware,
+        user_limit=f"{settings.RATE_LIMIT_USER_PER_MINUTE}/min",
+        global_limit=f"{settings.RATE_LIMIT_GLOBAL_PER_MINUTE}/min",
+    )
+
+    # ── CORS ─────────────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.CORS_ORIGINS,
@@ -149,7 +162,7 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # ── Metrics Middleware (新增) ────────────────────────────────────
+    # ── Metrics (outermost, so rejected requests are still counted) ──
     from src.api.middleware.metrics import MetricsMiddleware
     app.add_middleware(MetricsMiddleware)
 

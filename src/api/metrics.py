@@ -230,36 +230,46 @@ CACHE_SIZE = Gauge(
 # ═══════════════════════════════════════════════════════════════════
 
 def update_concurrent_metrics():
-    """从 SingletonManager 采集并发控制指标"""
+    """Collect live concurrency metrics (reranker + connection pools).
+
+    The reranker numbers come from the **production** singleton in
+    ``src.core.singleton`` — the one the request path actually uses.
+    Previously this read ``concurrent_singleton.SingletonManager``, a
+    parallel implementation that is never instantiated on the live path,
+    so every gauge here stayed at 0 regardless of traffic.
+    """
     try:
+        from src.core.singleton import get_reranker
+
+        reranker = get_reranker()
+        rstats = getattr(reranker, "stats", None)
+        if rstats:
+            SEMAPHORE_ACTIVE.set(rstats.get("active", 0))
+            SEMAPHORE_WAITING.set(rstats.get("waiting", 0))
+            SEMAPHORE_MAX_CONCURRENT.set(rstats.get("max_concurrent", 4))
+
+            RERANKER_REQUESTS_TOTAL.set(rstats.get("total_requests", 0))
+            RERANKER_INFERENCE_TOTAL.set(rstats.get("inference_count", 0))
+            RERANKER_CACHE_HITS_TOTAL.set(rstats.get("cache_hits", 0))
+            RERANKER_CACHE_SIZE.set(rstats.get("cache_size", 0))
+    except Exception as e:
+        logger.warning("Failed to update reranker metrics: %s", e)
+
+    try:
+        # Pools are only created once the retrieval path actually acquires
+        # one; until then these gauges legitimately read 0.
         from src.core.concurrent_singleton import SingletonManager
-        stats = SingletonManager.get_stats()
-        
-        # 更新重排序器指标
-        for key, instance in stats.items():
-            if isinstance(instance, dict) and "semaphore" in instance:
-                sem_stats = instance["semaphore"]
-                SEMAPHORE_ACTIVE.set(sem_stats.get("active", 0))
-                SEMAPHORE_WAITING.set(sem_stats.get("waiting", 0))
-                SEMAPHORE_MAX_CONCURRENT.set(sem_stats.get("max_concurrent", 4))
-                
-                RERANKER_REQUESTS_TOTAL.set(instance.get("total_requests", 0))
-                RERANKER_INFERENCE_TOTAL.set(instance.get("inference_count", 0))
-                RERANKER_CACHE_HITS_TOTAL.set(instance.get("cache_hits", 0))
-                RERANKER_CACHE_SIZE.set(instance.get("cache_size", 0))
-        
-        # 更新连接池指标
-        pools = stats.get("pools", {})
+
+        pools = SingletonManager.get_stats().get("pools", {})
         for key, pool_stats in pools.items():
             if "milvus" in key:
-                MILVUS_POOL_SIZE.set(pool_stats.get("pool_size", 0))
+                MILVUS_POOL_SIZE.set(pool_stats.get("available", 0))
                 MILVUS_POOL_ACTIVE.set(pool_stats.get("active", 0))
             elif "redis" in key:
-                REDIS_POOL_SIZE.set(pool_stats.get("pool_size", 0))
+                REDIS_POOL_SIZE.set(pool_stats.get("available", 0))
                 REDIS_POOL_ACTIVE.set(pool_stats.get("active", 0))
-                
     except Exception as e:
-        logger.warning(f"Failed to update concurrent metrics: {e}")
+        logger.warning("Failed to update pool metrics: %s", e)
 
 
 # ═══════════════════════════════════════════════════════════════════
