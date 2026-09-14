@@ -41,54 +41,63 @@ def get_minio_client() -> Minio:
     return _client
 
 
-async def upload_file(object_name: str, data: bytes, content_type: str = "application/octet-stream") -> str:
-    """
-    Upload a file to MinIO.
+def upload_file(
+    local_path: str,
+    object_name: str,
+    content_type: Optional[str] = None,
+) -> str:
+    """Upload a local file to MinIO.
+
+    **Deliberately synchronous.**  The minio SDK is blocking, and every caller
+    wraps this in ``asyncio.to_thread``.  These three functions used to be
+    declared ``async def`` while the call sites called them through
+    ``to_thread`` — which meant ``to_thread`` invoked the coroutine function,
+    received an un-awaited coroutine object back, and silently discarded it.
+    The upload never happened and no error was raised.
 
     Args:
+        local_path: Path of the file to upload.
         object_name: Object key in the bucket.
-        data: File content bytes.
-        content_type: MIME type of the file.
+        content_type: MIME type; guessed from the filename when omitted.
 
     Returns:
         The object name used.
     """
-    import io
     client = get_minio_client()
     settings = get_settings()
-    data_stream = io.BytesIO(data)
-    client.put_object(
-        bucket_name=settings.MINIO_BUCKET,
-        object_name=object_name,
-        data=data_stream,
-        length=len(data),
-        content_type=content_type,
+    kwargs = {"content_type": content_type} if content_type else {}
+    client.fput_object(
+        settings.MINIO_BUCKET,
+        object_name,
+        local_path,
+        **kwargs,
     )
-    logger.info("Uploaded file to MinIO: %s/%s", settings.MINIO_BUCKET, object_name)
+    logger.info(
+        "Uploaded %s -> %s/%s", local_path, settings.MINIO_BUCKET, object_name
+    )
     return object_name
 
 
-async def download_file(object_name: str) -> bytes:
-    """
-    Download a file from MinIO.
+def download_file(object_name: str, dest_path: str) -> str:
+    """Download an object from MinIO to a local path (synchronous, see above).
 
     Args:
         object_name: Object key in the bucket.
+        dest_path: Local path to write to; its parent directory must exist.
 
     Returns:
-        File content bytes.
+        The destination path.
     """
     client = get_minio_client()
     settings = get_settings()
-    response = client.get_object(settings.MINIO_BUCKET, object_name)
-    try:
-        return response.read()
-    finally:
-        response.close()
-        response.release_conn()
+    client.fget_object(settings.MINIO_BUCKET, object_name, dest_path)
+    logger.info(
+        "Downloaded %s/%s -> %s", settings.MINIO_BUCKET, object_name, dest_path
+    )
+    return dest_path
 
 
-async def delete_file(object_name: str) -> bool:
+def delete_file(object_name: str) -> bool:
     """Delete a file from MinIO. Returns True if successful."""
     client = get_minio_client()
     settings = get_settings()

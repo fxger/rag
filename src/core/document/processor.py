@@ -3,11 +3,10 @@ import asyncio
 import logging
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from src.config.settings import get_settings
 from src.config.minio import download_file
@@ -177,31 +176,39 @@ class DocumentProcessor:
         """Write chunks and metadata rows to the database."""
         async with async_session_factory() as session:
             async with session.begin():
+                doc_uuid = uuid.UUID(str(document_id))
+
                 # Insert metadata
                 for key, value in parsed_metadata.items():
-                    meta = DocumentMetadata(
-                        id=str(uuid.uuid4()),
-                        document_id=document_id,
-                        key=key,
-                        value=str(value),
-                        value_type=self._infer_value_type(value),
-                        source=MetadataSource.PARSER,
+                    session.add(
+                        DocumentMetadata(
+                            id=uuid.uuid4(),
+                            document_id=doc_uuid,
+                            key=key,
+                            value=str(value),
+                            value_type=self._infer_value_type(value),
+                            source=MetadataSource.PARSER,
+                        )
                     )
-                    session.add(meta)
 
-                # Insert chunks
+                # Insert chunks.
+                # start_offset / end_offset are deliberately not written: the
+                # chunker produces them, but neither the DocumentChunk model
+                # nor the document_chunks table has those columns.  Passing
+                # them raised
+                #   TypeError: 'start_offset' is an invalid keyword argument
+                # and failed every processing run.
                 for chunk in chunks:
-                    chunk_record = DocumentChunk(
-                        id=str(uuid.uuid4()),
-                        document_id=document_id,
-                        chunk_index=chunk.index,
-                        content=chunk.content,
-                        token_count=chunk.token_count,
-                        start_offset=chunk.start_offset,
-                        end_offset=chunk.end_offset,
-                        metadata_json=chunk.metadata,
+                    session.add(
+                        DocumentChunk(
+                            id=uuid.uuid4(),
+                            document_id=doc_uuid,
+                            chunk_index=chunk.index,
+                            content=chunk.content,
+                            token_count=chunk.token_count,
+                            metadata_json=chunk.metadata,
+                        )
                     )
-                    session.add(chunk_record)
 
     async def _update_status(
         self,
@@ -211,9 +218,13 @@ class DocumentProcessor:
         error: str | None = None,
     ) -> None:
         """Update the document status and optional processing stats."""
+        # func.now() rather than datetime.now(timezone.utc): these columns are
+        # `timestamp WITHOUT time zone`, and asyncpg rejects an aware datetime
+        # ("can't subtract offset-naive and offset-aware datetimes").  Letting
+        # the server stamp it also avoids clock skew between app and database.
         values: dict[str, Any] = {
             "status": status,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": func.now(),
         }
         if chunk_count is not None:
             values["chunk_count"] = chunk_count
@@ -235,11 +246,18 @@ class DocumentProcessor:
 
     @staticmethod
     def _infer_value_type(value: Any) -> MetadataValueType:
-        """Infer the metadata value type from a Python value."""
+        """Infer the metadata value type from a Python value.
+
+        ``MetadataValueType`` defines STRING / NUMBER / BOOLEAN / JSON — there
+        is no INTEGER or FLOAT member.  This used to return those two names,
+        so every processing run died with AttributeError at the metadata
+        insert.  Both collapse into NUMBER; the value is persisted as TEXT
+        anyway (see ``value=str(value)``), so the int/float distinction would
+        not survive.
+        """
         if isinstance(value, bool):
+            # Must precede the int check — bool is a subclass of int.
             return MetadataValueType.BOOLEAN
-        if isinstance(value, int):
-            return MetadataValueType.INTEGER
-        if isinstance(value, float):
-            return MetadataValueType.FLOAT
+        if isinstance(value, (int, float)):
+            return MetadataValueType.NUMBER
         return MetadataValueType.STRING

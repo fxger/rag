@@ -173,6 +173,43 @@ def insert_vectors(
         return 0
 
 
+def delete_vectors_by_document(
+    document_id: str,
+    collection_name: Optional[str] = None,
+) -> int:
+    """Delete every vector belonging to a document.
+
+    Needed because deleting a document removes its PostgreSQL rows and its
+    MinIO object, but nothing used to touch Milvus — so the vectors stayed
+    behind and retrieval could still return chunks of a deleted document.
+
+    Args:
+        document_id: UUID of the document whose vectors should go.
+        collection_name: Override the configured collection.
+
+    Returns:
+        Number of entities Milvus reports as deleted, or 0 on failure.
+    """
+    settings = get_settings()
+    client = get_milvus_client()
+    col_name = collection_name or settings.MILVUS_COLLECTION
+
+    try:
+        result = client.delete(
+            collection_name=col_name,
+            filter=f'document_id == "{document_id}"',
+        )
+        deleted = 0
+        if isinstance(result, dict):
+            deleted = int(result.get("delete_count", 0) or 0)
+        logger.info("Deleted %d vectors for document %s", deleted, document_id)
+        return deleted
+
+    except Exception as e:
+        logger.error("Milvus delete error for document %s: %s", document_id, e)
+        return 0
+
+
 def close_milvus() -> None:
     """Close Milvus connection."""
     global _client

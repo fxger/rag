@@ -3,7 +3,6 @@ import asyncio
 import hashlib
 import logging
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -109,6 +108,12 @@ class DocumentService:
         )
 
         # Create DB record — field names follow the Document model.
+        # Timestamps are deliberately omitted: TimestampMixin declares them
+        # with server_default=func.now(), and the columns are
+        # `timestamp WITHOUT time zone`.  Passing datetime.now(timezone.utc)
+        # here made asyncpg raise
+        #   DataError: can't subtract offset-naive and offset-aware datetimes
+        # which meant every upload failed at the INSERT.
         doc = Document(
             id=uuid.UUID(document_id),
             title=fname,
@@ -121,8 +126,6 @@ class DocumentService:
             status=DocumentStatus.PENDING,
             file_size=path.stat().st_size,
             owner_id=uuid.UUID(str(owner_id)),
-            created_at=datetime.now(timezone.utc),
-            updated_at=datetime.now(timezone.utc),
         )
 
         async with async_session_factory() as session:
@@ -349,6 +352,20 @@ class DocumentService:
                 await asyncio.to_thread(delete_file, object_path)
             except Exception as exc:
                 logger.warning("MinIO cleanup failed for %s: %s", document_id, exc)
+
+        # Best-effort vector cleanup.  Without this the document's vectors stay
+        # in Milvus forever: retrieval keeps returning chunks of a document
+        # that no longer exists, and the entity count drifts upward on every
+        # create/delete cycle.
+        try:
+            from src.config.milvus import delete_vectors_by_document  # lazy import
+
+            removed = await asyncio.to_thread(
+                delete_vectors_by_document, str(document_id)
+            )
+            logger.info("Removed %d vectors for document %s", removed, document_id)
+        except Exception as exc:
+            logger.warning("Milvus cleanup failed for %s: %s", document_id, exc)
 
         logger.info("Document deleted: %s", document_id)
         return result.rowcount > 0
