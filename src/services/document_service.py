@@ -117,7 +117,7 @@ class DocumentService:
         doc = Document(
             id=uuid.UUID(document_id),
             title=fname,
-            content_hash=self._content_hash(path),
+            content_hash=self._content_hash(path, (metadata or {}).get("tenant_id")),
             file_path=object_path,
             file_type=file_type,
             # DocumentStatus has no UPLOADED member (only pending /
@@ -155,13 +155,22 @@ class DocumentService:
         }
 
     @staticmethod
-    def _content_hash(path: Path) -> str:
-        """SHA-256 of the file contents.
+    def _content_hash(path: Path, tenant_id: str | None = None) -> str:
+        """SHA-256 of the file contents, scoped to the tenant.
 
         ``Document.content_hash`` is non-nullable and unique; the service
         never populated it, so inserts would have failed outright.
+
+        The tenant is mixed into the digest on purpose: two stores legitimately
+        upload the *same* platform document, and a global unique index on the
+        bare file hash would make the second upload fail with
+        ``duplicate key value violates unique constraint``.  Scoping keeps the
+        de-duplication (same tenant, same bytes → same hash) without coupling
+        tenants to each other.
         """
         digest = hashlib.sha256()
+        if tenant_id:
+            digest.update(f"tenant:{tenant_id}\x00".encode())
         with path.open("rb") as fh:
             for block in iter(lambda: fh.read(1024 * 1024), b""):
                 digest.update(block)
@@ -207,9 +216,21 @@ class DocumentService:
             )
             rows = (await session.execute(stmt)).scalars().all()
 
+            # Document-level tags (tenant_id among them) live in
+            # document_metadata, not in Chunk.metadata_json.  Retrieval filters
+            # on the *document's* tenant, so it has to be copied down to every
+            # chunk row here.
+            meta_stmt = select(DocumentMetadata).where(
+                DocumentMetadata.document_id == document_id
+            )
+            meta_rows = (await session.execute(meta_stmt)).scalars().all()
+
         if not rows:
             logger.warning("Document %s produced no chunks to index", document_id)
             return 0
+
+        doc_metadata = {row.key: row.value for row in meta_rows}
+        tenant_id = doc_metadata.get("tenant_id") or "__platform__"
 
         embeddings = await self._embedder.generate([row.content for row in rows])
 
@@ -219,8 +240,11 @@ class DocumentService:
                 "chunk_id": str(row.id),
                 "content": row.content,
                 "embedding": embedding,
+                "tenant_id": tenant_id,
                 "metadata": {
+                    **doc_metadata,
                     **(row.metadata_json or {}),
+                    "tenant_id": tenant_id,
                     "chunk_index": row.chunk_index,
                     "token_count": row.token_count,
                 },

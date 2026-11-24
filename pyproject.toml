@@ -96,6 +96,11 @@ line-length = 120
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "S", "B", "A", "COM", "C4", "PT", "RUF"]
 
+[tool.ruff.lint.per-file-ignores]
+# 验收脚本用 assert 做断言是设计意图（假组件驱动，检查依赖注入正确性）
+"scripts/verify_wiring.py" = ["S101"]
+"tests/**" = ["S101"]
+
 [tool.mypy]
 python_version = "3.11"
 strict = true

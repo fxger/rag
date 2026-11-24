@@ -7,7 +7,7 @@ L2 uses Redis for distributed cross-instance caching.
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from cachetools import TTLCache
 
@@ -36,13 +36,13 @@ class MultiLevelCache:
 
     # ── Read ─────────────────────────────────────────────────────────
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Retrieve value from L1, then L2 if missing."""
+    async def get_with_source(self, key: str) -> tuple[str, Any | None]:
+        """Retrieve value and report which tier served it: ``"l1" | "l2" | "miss"``."""
         # L1 hit
         if key in self.l1:
             self._hits["l1"] += 1
             logger.debug("L1 cache hit: %s", key)
-            return self.l1[key]
+            return "l1", self.l1[key]
 
         # L2 hit
         try:
@@ -53,12 +53,17 @@ class MultiLevelCache:
                 self.l1[key] = value  # promote to L1
                 self._hits["l2"] += 1
                 logger.debug("L2 cache hit: %s", key)
-                return value
+                return "l2", value
         except Exception as e:
             logger.warning("L2 cache read error: %s", e)
 
         self._hits["miss"] += 1
-        return None
+        return "miss", None
+
+    async def get(self, key: str) -> Any | None:
+        """Retrieve value from L1, then L2 if missing."""
+        _, value = await self.get_with_source(key)
+        return value
 
     # ── Write ────────────────────────────────────────────────────────
 

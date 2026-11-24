@@ -22,6 +22,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     UploadFile,
     status,
@@ -113,6 +114,11 @@ async def _process_in_background(document_id: str) -> None:
 async def upload_document(
     background: BackgroundTasks,
     file: UploadFile = File(...),
+    tenant_id: str = Form(
+        "__platform__",
+        max_length=64,
+        description="租户键（如 store_1000001）；不传则进平台共享库",
+    ),
     current_user: dict = Depends(get_current_user),
 ) -> Any:
     """Upload a document and kick off processing in the background."""
@@ -143,6 +149,9 @@ async def upload_document(
             owner_id=current_user["id"],
             file_name=filename,
             content_type=file.content_type,
+            # Persisted as document_metadata rows and copied into every chunk's
+            # Milvus payload, which is what the tenant filter reads.
+            metadata={"tenant_id": tenant_id},
         )
     finally:
         local_path.unlink(missing_ok=True)

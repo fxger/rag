@@ -181,6 +181,13 @@ def create_app() -> FastAPI:
     app.include_router(documents_router, prefix="/api/v1/documents", tags=["Documents"])
     app.include_router(admin_router, prefix="/api/v1/admin", tags=["Admin"])
 
+    # Knowledge-base retrieval for external agents.  The router itself declares
+    # no prefix (unlike the four above), so the real path is
+    # /api/v1/kb/retrieve rather than /api/v1/kb/kb/retrieve.
+    from src.api.v1.kb import router as kb_router
+
+    app.include_router(kb_router, prefix="/api/v1/kb", tags=["Knowledge Base"])
+
     return app
 
 
