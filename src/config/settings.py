@@ -6,7 +6,6 @@ All VM connection endpoints are configured here.
 """
 
 from functools import lru_cache
-from typing import Optional
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -44,7 +43,7 @@ class Settings(BaseSettings):
         description="Redis connection string",
     )
     REDIS_CACHE_DB: int = Field(default=1, description="DB for embedding cache")
-    REDIS_PASSWORD: Optional[str] = Field(default=None)
+    REDIS_PASSWORD: str | None = Field(default=None)
     REDIS_MAX_CONNECTIONS: int = Field(default=50)
 
     # ── Milvus (VM1: 192.168.86.132) ────────────────────────────────
@@ -53,6 +52,13 @@ class Settings(BaseSettings):
     MILVUS_COLLECTION: str = Field(default="enterprise_rag")
     MILVUS_DIMENSION: int = Field(default=1024, description="Qwen embedding dim")
 
+    # ── Qwen Embedding (VM1: 192.168.86.132) ────────────────────────
+    QWEN_EMBED_URL: str = Field(
+        default="http://192.168.86.132:8000/v1/embeddings",
+        description="OpenAI-compatible embedding endpoint",
+    )
+    QWEN_EMBED_MODEL: str = Field(default="qwen-embedding")
+
     # ── MinIO (VM1: 192.168.86.132) ─────────────────────────────────
     MINIO_ENDPOINT: str = Field(default="192.168.86.132:9000")
     MINIO_ACCESS_KEY: str = Field(default="minioadmin")
@@ -60,9 +66,30 @@ class Settings(BaseSettings):
     MINIO_BUCKET: str = Field(default="rag-documents")
     MINIO_SECURE: bool = Field(default=False)
 
+    # ── 文档处理 ────────────────────────────────────────────────────
+    TEMP_DIR: str = Field(
+        default="",
+        description="上传中转目录；留空则使用系统临时目录",
+    )
+
+    # ── 检索增强开关 ────────────────────────────────────────────────
+    ENABLE_RERANK: bool = Field(
+        default=False,
+        description=(
+            "对非流式查询启用 Cross-Encoder 精排。"
+            "注意：效果完全取决于 RERANKER_MODEL 的语言能力——实测（20 查询 / "
+            "754 分块，scripts/retrieval_experiment.py，相对混合检索 RRF）："
+            "英文 ms-marco-MiniLM-L-6-v2 HitRate 0.95→0.80、MRR -0.061（有害）；"
+            "中文 bge-reranker-base HitRate 0.95→1.00、MRR +0.138；"
+            "多语 bge-reranker-v2-m3 HitRate 0.95→1.00、MRR +0.246。"
+            "因此本项默认关闭仅出于可移植性（默认模型需联网获取），"
+            "本机 .env 已开启并指向本地缓存的中文模型。"
+        ),
+    )
+
     # ── OpenAI / DeepSeek ───────────────────────────────────────────
     OPENAI_API_KEY: str = Field(default="your-api-key")
-    OPENAI_BASE_URL: Optional[str] = Field(default=None)
+    OPENAI_BASE_URL: str | None = Field(default=None)
     EMBEDDING_MODEL: str = Field(default="qwen-embedding")
     LLM_MODEL: str = Field(default="deepseek-chat")
     EMBEDDING_DIMENSION: int = Field(default=1024)
@@ -95,22 +122,72 @@ class Settings(BaseSettings):
     # ── Reranker Settings ────────────────────────────────────────────
     RERANKER_ENABLED: bool = Field(default=True, description="Enable cross-encoder reranking")
     RERANKER_MODEL: str = Field(
-        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
-        description="Cross-encoder model name"
+        default="BAAI/bge-reranker-base",
+        description=(
+            "Cross-encoder 模型名或本地目录。默认已换为中文/多语模型："
+            "实测英文 ms-marco 在本项目中文语料上会降低排序质量。"
+            "吞吐参考（本机 CPU，20 候选/查询）：bge-reranker-base ≈ 3.8s，"
+            "bge-reranker-v2-m3 ≈ 13.1s（质量更高，MRR 0.942 vs 0.833）。"
+            "离线环境可填本地路径，例如 D:/hf-cache/bge-reranker-base。"
+        ),
     )
     RERANKER_MAX_LENGTH: int = Field(default=512, description="Max sequence length")
     RERANKER_BATCH_SIZE: int = Field(default=32, description="Batch size for inference")
     RERANKER_CACHE_ENABLED: bool = Field(default=True, description="Enable reranking cache")
     RERANKER_CACHE_MAXSIZE: int = Field(default=256, description="Max cache entries")
 
+    # ── Cache Anti-Avalanche ─────────────────────────────────────────
+    ENABLE_CACHE_ANTI_AVALANCHE: bool = Field(
+        default=True,
+        description="缓存重建单飞锁（防雪崩）。失败时自动降级为直接检索",
+    )
+    CACHE_LOCK_TTL: int = Field(
+        default=30,
+        description="单飞锁 TTL（秒）。锁持有者重建缓存的最长允许时间",
+    )
+    CACHE_TTL_JITTER_PCT: float = Field(
+        default=0.1,
+        description="缓存 TTL 随机抖动比例（0.1 = ±10%），防止集中过期",
+    )
+    ENABLE_CACHE_WARMER: bool = Field(
+        default=True,
+        description="允许缓存预热（warm_hot_queries / build_warm_payloads）",
+    )
+    CACHE_WARM_HOT_QUERIES: int = Field(
+        default=20,
+        description="每次预热的热门查询条数上限",
+    )
+    CACHE_WARM_TTL: int = Field(
+        default=600,
+        description="预热写入的缓存 TTL（秒），比常规缓存更长",
+    )
+
+    # ── Query Rewrite / HyDE ─────────────────────────────────────────
+    ENABLE_QUERY_REWRITE: bool = Field(
+        default=False,
+        description="查询改写/HyDE 开关。默认关闭：短查询收益明显，但多一次 LLM 往返",
+    )
+    QUERY_REWRITE_MODE: str = Field(
+        default="rewrite",
+        description="改写模式：rewrite（多变体）/ hyde（假设文档）",
+    )
+    QUERY_REWRITE_VARIANTS: int = Field(
+        default=3,
+        description="rewrite 模式生成的查询变体数",
+    )
+    QUERY_REWRITE_MAX_CHARS: int = Field(
+        default=20,
+        description="只改写不超过此长度的查询；<=0 表示不限制",
+    )
+
     # ── Hybrid Retrieval Settings ────────────────────────────────────
     RETRIEVAL_FUSION_METHOD: str = Field(
         default="adaptive",
-        description="Fusion method: adaptive/rrf/weighted"
+        description="Fusion method: adaptive/rrf/weighted",
     )
     RETRIEVAL_SPARSE_BOOST_THRESHOLD: float = Field(
         default=2.0,
-        description="Sparse score threshold for weight boost"
+        description="Sparse score threshold for weight boost",
     )
     RETRIEVAL_BASE_WEIGHTS: dict = Field(
         default={
@@ -119,7 +196,7 @@ class Settings(BaseSettings):
             "comparative": {"dense": 0.5, "sparse": 0.3},
             "navigational": {"dense": 0.4, "sparse": 0.4},
         },
-        description="Base weights by query type"
+        description="Base weights by query type",
     )
 
     # ── Rate Limiting ────────────────────────────────────────────────
@@ -135,7 +212,7 @@ class Settings(BaseSettings):
         if not v.startswith("postgresql+asyncpg://"):
             raise ValueError(
                 "DATABASE_URL must use the asyncpg driver: "
-                "postgresql+asyncpg://user:pass@host:port/db"
+                "postgresql+asyncpg://user:pass@host:port/db",
             )
         return v
 

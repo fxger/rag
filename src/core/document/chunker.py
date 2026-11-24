@@ -1,8 +1,17 @@
 """Intelligent document chunking with type-aware strategies."""
-import re
 import logging
-from dataclasses import dataclass, field
+import re
+from dataclasses import dataclass
 from typing import Any
+
+from src.core.tokenization import (
+    SENTENCE_END_CHARS,
+    count_chars,
+    estimate_tokens,
+    split_tokens,
+    token_spans,
+    tokens_for_counts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -10,7 +19,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class Chunk:
     """A text chunk with positional metadata.
-    
+
     Attributes:
         content: The text content of this chunk.
         index: Zero-based index of the chunk in the document.
@@ -31,35 +40,26 @@ class Chunk:
 
 class SmartChunker:
     """Split documents into chunks using type-aware strategies.
-    
-    For Markdown files the chunker first splits by headings, then
-    applies a sliding-window strategy within each section.  For all
-    other file types a standard sliding-window approach with
-    sentence-boundary detection is used.
-    
-    Args:
-        chunk_size: Target maximum token count per chunk.
-        chunk_overlap: Number of tokens to overlap between
-            consecutive chunks for context continuity.
-    """
 
-    # Sentence-ending patterns for multiple languages.
-    # CJK punctuation is self-delimiting (no trailing space required),
-    # while Latin punctuation must be followed by whitespace or the end
-    # of the string so that abbreviations like "U.S.A." are not split.
-    _SENTENCE_END = re.compile(r"[。！？]|[.!?](?=\s|$)")
+    For Markdown files the chunker first splits by headings, then applies
+    a sliding-window strategy within each section.  For all other file
+    types a standard sliding-window approach with sentence-boundary
+    detection is used.
+
+    Both the window boundary *and* the reported ``token_count`` come from
+    :mod:`src.core.tokenization`.  Keeping them on one measure is what
+    makes ``chunk_size`` an actual constraint — previously the window was
+    measured in whitespace tokens while the reported count used a
+    character heuristic, so a "512-token" chunk could report 764.
+
+    Args:
+        chunk_size: Maximum estimated tokens per chunk.
+        chunk_overlap: Estimated tokens of overlap between consecutive
+            chunks, for context continuity.
+    """
 
     # Markdown heading pattern
     _HEADING = re.compile(r"^(#{1,6})\s+.+$", re.MULTILINE)
-
-    # Token pattern.  Each CJK ideograph is its own token; runs of
-    # non-CJK, non-whitespace characters form a single token.  Chinese
-    # text has no inter-word spaces, so whitespace-only tokenization
-    # would collapse an entire document into one token.
-    _TOKEN = re.compile(
-        r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]"
-        r"|[^\s\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+"
-    )
 
     def __init__(self, chunk_size: int = 512, chunk_overlap: int = 50):
         if chunk_size <= 0:
@@ -83,12 +83,12 @@ class SmartChunker:
         metadata: dict[str, Any] | None = None,
     ) -> list[Chunk]:
         """Split *content* into chunks.
-        
+
         Args:
             content: The full document text.
             file_type: File extension hint (e.g. ``"md"``, ``"pdf"``).
             metadata: Optional metadata to attach to every chunk.
-            
+
         Returns:
             Ordered list of ``Chunk`` objects.
         """
@@ -107,7 +107,6 @@ class SmartChunker:
         self, text: str, metadata: dict[str, Any] | None,
     ) -> list[Chunk]:
         """Split Markdown by headings first, then chunk each section."""
-        # Find all heading positions
         heading_positions = [m.start() for m in self._HEADING.finditer(text)]
 
         if not heading_positions:
@@ -133,7 +132,7 @@ class SmartChunker:
                 continue
 
             section_chunks = self._sliding_window_chunks(section, metadata)
-            # Re-index and adjust offsets relative to full document
+            # Re-index and adjust offsets relative to the full document
             for ch in section_chunks:
                 ch.index = len(chunks)
                 ch.start_offset += global_offset
@@ -151,115 +150,118 @@ class SmartChunker:
     def _sliding_window_chunks(
         self, text: str, metadata: dict[str, Any] | None,
     ) -> list[Chunk]:
-        """Standard sliding-window chunking with sentence-boundary detection.
-        
-        The algorithm walks through the text in steps of
-        ``chunk_size - chunk_overlap`` tokens.  At each step it
-        snaps the end boundary to the nearest sentence end to avoid
-        splitting mid-sentence.
-        """
-        # Tokens are tracked as character spans rather than strings so
-        # that the original text can be sliced back verbatim.  Joining
-        # tokens would inject spaces between CJK characters and destroy
-        # the source text.
-        spans = self._token_spans(text)
-        total_tokens = len(spans)
+        """Sliding-window chunking bounded by an estimated token budget.
 
-        if total_tokens == 0:
+        Tokens are tracked as character spans so the original text can be
+        sliced back verbatim — re-joining token strings would inject
+        spaces between CJK characters.  Windows advance by
+        ``chunk_size - chunk_overlap`` *estimated tokens*, so the overlap
+        means the same thing for Chinese and English input.
+        """
+        spans = token_spans(text)
+        if not spans:
             return []
 
-        chunks: list[Chunk] = []
+        # Count each token's characters once, so budgets can be accumulated
+        # in a single pass instead of re-measuring substrings.
+        weights = [count_chars(text[s:e]) for s, e in spans]
+        total = len(spans)
         step = max(1, self.chunk_size - self.chunk_overlap)
-        pos = 0  # token index
 
-        while pos < total_tokens:
-            end_pos = min(pos + self.chunk_size, total_tokens)
+        chunks: list[Chunk] = []
+        start = 0
 
-            # Try to snap to a sentence boundary within the last 20 % of
-            # the window.
-            snap_window = max(1, self.chunk_size // 5)
-            snap_start = max(pos, end_pos - snap_window)
+        while start < total:
+            end = self._window_end(text, spans, weights, start)
 
-            if snap_start < end_pos:
-                snap_text = text[spans[snap_start][0]:spans[end_pos - 1][1]]
-                match = None
-                for m in self._SENTENCE_END.finditer(snap_text):
-                    match = m
-
-                if match:
-                    # Character position of the sentence end, then the
-                    # first token boundary at or past it.
-                    cut_char = spans[snap_start][0] + match.end()
-                    new_end = snap_start
-                    for i in range(snap_start, end_pos):
-                        if spans[i][1] >= cut_char:
-                            new_end = i + 1
-                            break
-                    if new_end > pos:
-                        end_pos = new_end
-
-            raw_text = text[spans[pos][0]:spans[end_pos - 1][1]]
+            raw_text = text[spans[start][0]:spans[end - 1][1]]
             chunk_text = raw_text.strip()
             if chunk_text:
                 # Keep offsets exact after trimming surrounding whitespace.
                 leading = len(raw_text) - len(raw_text.lstrip())
-                start_char = spans[pos][0] + leading
-                end_char = start_char + len(chunk_text)
-
-                chunk = Chunk(
+                start_char = spans[start][0] + leading
+                chunks.append(Chunk(
                     content=chunk_text,
                     index=len(chunks),
                     start_offset=start_char,
-                    end_offset=end_char,
-                    token_count=self._estimate_tokens(chunk_text),
+                    end_offset=start_char + len(chunk_text),
+                    token_count=estimate_tokens(chunk_text),
                     metadata=metadata,
-                )
-                chunks.append(chunk)
+                ))
 
-            pos += step
+            # Advance by `step` estimated tokens (at least one token, so a
+            # pathologically short window can never stall the loop).
+            cjk = other = 0
+            nxt = start
+            while nxt < end:
+                c, o = weights[nxt]
+                if nxt > start and tokens_for_counts(cjk + c, other + o) > step:
+                    break
+                cjk += c
+                other += o
+                nxt += 1
+            start = max(nxt, start + 1)
 
         return chunks
 
-    # ------------------------------------------------------------------
-    # Token estimation helpers
-    # ------------------------------------------------------------------
+    def _window_end(
+        self,
+        text: str,
+        spans: list[tuple[int, int]],
+        weights: list[tuple[int, int]],
+        start: int,
+    ) -> int:
+        """Exclusive end index of the window beginning at token *start*.
 
-    def _estimate_tokens(self, text: str) -> int:
-        """Rough token-count estimate.
-        
-        English: ~4 chars per token.  CJK characters: ~1 char ≈ 1 token.
-        Mixed text uses a weighted average.
+        The window grows while the accumulated estimate stays within
+        ``chunk_size`` (always accepting at least one token).  It is then
+        pulled back to the last sentence-ending token found within the
+        final fifth of the window, unless that would empty the window.
         """
-        if not text:
-            return 0
+        total = len(spans)
+        cjk = other = 0
+        end = start
 
-        cjk_chars = sum(1 for ch in text if "\u4e00" <= ch <= "\u9fff")
-        non_cjk = len(text) - cjk_chars
+        while end < total:
+            c, o = weights[end]
+            if end > start and tokens_for_counts(cjk + c, other + o) > self.chunk_size:
+                break
+            cjk += c
+            other += o
+            end += 1
 
-        # 4 chars per token for Latin text, 1 token per CJK char
-        return (non_cjk // 4) + cjk_chars
+        if end - start <= 1:
+            return end
+
+        tail_start = max(start, end - max(1, (end - start) // 5))
+        cut = 0
+        for i in range(tail_start, end):
+            token = text[spans[i][0]:spans[i][1]]
+            if token and token[-1] in SENTENCE_END_CHARS:
+                cut = i + 1
+
+        return cut if cut > start else end
 
     # ------------------------------------------------------------------
-    # Tokenization (CJK-aware, no external dependency)
+    # Token helpers
+    #
+    # Thin wrappers kept for backwards compatibility.  The implementation
+    # lives in src.core.tokenization — do not reintroduce a local copy of
+    # the counting rules here, that is exactly how the two measures drifted
+    # apart in the first place.
     # ------------------------------------------------------------------
 
-    @classmethod
-    def _token_spans(cls, text: str) -> list[tuple[int, int]]:
-        """Return ``(start, end)`` character spans for every token.
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Estimate the token count of *text*."""
+        return estimate_tokens(text)
 
-        Each CJK ideograph is one token; a run of non-CJK,
-        non-whitespace characters forms one token.  The spans index
-        into *text*, so the original string can be sliced back
-        losslessly — unlike re-joining token strings, which would
-        inject spaces between CJK characters.
-        """
-        return [(m.start(), m.end()) for m in cls._TOKEN.finditer(text)]
+    @staticmethod
+    def _token_spans(text: str) -> list[tuple[int, int]]:
+        """Return ``(start, end)`` character spans for every token."""
+        return token_spans(text)
 
-    @classmethod
-    def _tokenize(cls, text: str) -> list[str]:
-        """Split text into CJK-aware tokens.
-
-        Each CJK ideograph becomes its own token; runs of Latin
-        characters, digits and punctuation are grouped by whitespace.
-        """
-        return [text[start:end] for start, end in cls._token_spans(text)]
+    @staticmethod
+    def _tokenize(text: str) -> list[str]:
+        """Split *text* into CJK-aware tokens."""
+        return split_tokens(text)

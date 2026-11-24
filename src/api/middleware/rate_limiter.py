@@ -8,9 +8,9 @@ import logging
 import time
 from typing import Optional
 
-from fastapi import Request, HTTPException, status
+from fastapi import Request, status
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from src.config.redis import get_redis
 
@@ -102,6 +102,50 @@ class RateLimiter:
             return 0
 
 
+def _too_many_requests(detail: str) -> JSONResponse:
+    """Build a 429 response.
+
+    Raising HTTPException from ``BaseHTTPMiddleware.dispatch`` does *not*
+    produce a 429: the ExceptionMiddleware that translates HTTPException
+    sits *inside* the user middleware stack, so the exception escapes past
+    it to ServerErrorMiddleware and surfaces as a 500.  Returning the
+    response directly is what actually yields a 429.
+    """
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": detail},
+        headers={"Retry-After": "60"},
+    )
+
+
+def _extract_user_id(request: Request) -> Optional[str]:
+    """Best-effort user id for per-user rate limiting.
+
+    Route handlers resolve the current user through a dependency, which runs
+    *after* middleware — so ``request.state.user_id`` is always unset here
+    and the per-user limit never used to trigger.  Decode the bearer token
+    directly; on any failure return None and let the global limit apply.
+    """
+    header = request.headers.get("authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return None
+
+    try:
+        from jose import jwt as jose_jwt
+
+        from src.config.settings import get_settings
+
+        settings = get_settings()
+        payload = jose_jwt.decode(
+            header[7:].strip(),
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+        return payload.get("sub") or payload.get("user_id")
+    except Exception:
+        return None
+
+
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """FastAPI middleware that enforces rate limits on every request."""
 
@@ -114,19 +158,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         # Global check
         if not await self.limiter.global_limit(self.global_limit_str):
-            raise HTTPException(
-                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                detail="Global rate limit exceeded. Please try again later.",
-            )
+            return _too_many_requests("Global rate limit exceeded. Please try again later.")
 
-        # Per-user check (extract from JWT if available)
-        user_id = getattr(request.state, "user_id", None)
-        if user_id:
-            if not await self.limiter.user_limit(str(user_id), self.user_limit_str):
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="User rate limit exceeded. Please try again later.",
-                )
+        # Per-user check
+        user_id = _extract_user_id(request)
+        if user_id and not await self.limiter.user_limit(str(user_id), self.user_limit_str):
+            return _too_many_requests("User rate limit exceeded. Please try again later.")
 
-        response = await call_next(request)
-        return response
+        return await call_next(request)

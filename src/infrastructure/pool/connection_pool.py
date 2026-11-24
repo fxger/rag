@@ -4,11 +4,10 @@ Connection pool manager for database, Redis, and other services.
 Provides centralized pool management with health monitoring and metrics.
 """
 
-import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
-from typing import Any, Optional
+from dataclasses import dataclass
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -79,17 +78,24 @@ class ConnectionPoolManager:
         try:
             pool = self._pools.get(pool_name)
 
-            if pool_name == "postgresql" and pool:
+            if pool_name == "postgresql":
+                # pool 为 None 时无法探活，必须视为不健康，
+                # 否则未接入真实连接池的服务会永远报告 healthy=True。
+                if pool is None:
+                    raise RuntimeError("postgresql pool is not registered")
                 # Async check via pool
                 async with pool.connect() as conn:
                     await conn.execute(
-                        __import__("sqlalchemy").text("SELECT 1")
+                        __import__("sqlalchemy").text("SELECT 1"),
                     )
-            elif pool_name == "redis" and pool:
+            elif pool_name == "redis":
+                if pool is None:
+                    raise RuntimeError("redis pool is not registered")
                 await pool.ping()
             elif pool_name == "milvus":
-                from src.config.milvus import get_milvus_connection
                 from pymilvus import utility as milvus_util
+
+                from src.config.milvus import get_milvus_connection
                 get_milvus_connection()
                 milvus_util.has_collection("__health_check__")
 

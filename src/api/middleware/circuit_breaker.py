@@ -130,6 +130,18 @@ class CircuitBreaker:
             "failure_rate": self._total_failures / max(self._total_calls, 1),
         }
 
+    def record_success(self) -> None:
+        """Report a success for callers that cannot use ``call()``.
+
+        A streaming response is consumed lazily, so it cannot be wrapped by
+        ``call()`` — those callers report their outcome directly.
+        """
+        self._on_success()
+
+    def record_failure(self) -> None:
+        """Report a failure for callers that cannot use ``call()``."""
+        self._on_failure()
+
     def reset(self) -> None:
         """Manually reset the circuit to CLOSED."""
         self._state = CircuitState.CLOSED

@@ -1,0 +1,51 @@
+{
+  "generated_at": "2026-09-14T13:37:37",
+  "corpus_size": 754,
+  "query_count": 20,
+  "top_k": 5,
+  "config": {
+    "milvus_collection": "enterprise_rag",
+    "embedding_model": "qwen-embedding",
+    "fusion": "rrf(k=60)",
+    "reranker_model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    "candidates_per_path": 20
+  },
+  "results": {
+    "dense_only": {
+      "hit_rate": 0.8,
+      "mrr": 0.6667,
+      "ndcg": 0.7012,
+      "hits": 16,
+      "total": 20,
+      "elapsed_s": 23.42,
+      "label": "纯稠密向量"
+    },
+    "sparse_only": {
+      "hit_rate": 0.9,
+      "mrr": 0.6008,
+      "ndcg": 0.6742,
+      "hits": 18,
+      "total": 20,
+      "elapsed_s": 0.05,
+      "label": "纯稀疏 BM25"
+    },
+    "hybrid": {
+      "hit_rate": 0.95,
+      "mrr": 0.6958,
+      "ndcg": 0.7596,
+      "hits": 19,
+      "total": 20,
+      "elapsed_s": 21.63,
+      "label": "混合检索 (RRF)"
+    },
+    "hybrid_rerank": {
+      "hit_rate": 0.8,
+      "mrr": 0.635,
+      "ndcg": 0.6755,
+      "hits": 16,
+      "total": 20,
+      "elapsed_s": 92.44,
+      "label": "混合 + Cross-Encoder 重排"
+    }
+  }
+}

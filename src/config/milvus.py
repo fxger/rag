@@ -58,6 +58,12 @@ def get_or_create_collection() -> str:
         FieldSchema(name="id", dtype=DataType.INT64, is_primary=True, auto_id=True),
         FieldSchema(name="document_id", dtype=DataType.VARCHAR, max_length=64),
         FieldSchema(name="chunk_id", dtype=DataType.VARCHAR, max_length=64),
+        # Tenant the chunk belongs to.  Scalar filtering (`tenant_id == "…"`)
+        # is cheap and exact — unlike the old approach of stuffing the tenant
+        # into the `metadata` JSON *string*, which Milvus can only `like`
+        # on a prefix, so a tenant filter either missed rows or scanned
+        # everything.  "__platform__" is the shared pool every store may read.
+        FieldSchema(name="tenant_id", dtype=DataType.VARCHAR, max_length=64),
         FieldSchema(name="content", dtype=DataType.VARCHAR, max_length=65535),
         FieldSchema(
             name="embedding",
@@ -89,6 +95,23 @@ def get_or_create_collection() -> str:
     return collection_name
 
 
+def get_collection_fields(collection_name: Optional[str] = None) -> set[str]:
+    """Return the set of field names of a collection.
+
+    Collections created before the tenant field existed do not have
+    ``tenant_id``; callers must branch on this instead of assuming, otherwise
+    every search raises "field tenant_id not exist".
+    """
+    client = get_milvus_client()
+    col_name = collection_name or get_settings().MILVUS_COLLECTION
+    try:
+        desc = client.describe_collection(collection_name=col_name)
+        return {f["name"] for f in desc.get("fields", [])}
+    except Exception as e:
+        logger.warning("Failed to describe collection %s: %s", col_name, e)
+        return set()
+
+
 def load_collection(collection_name: Optional[str] = None) -> bool:
     """Load collection into memory for faster search."""
     client = get_milvus_client()
@@ -107,9 +130,16 @@ def search_vectors(
     query_embedding: list[float],
     top_k: int = 10,
     collection_name: Optional[str] = None,
+    expr: Optional[str] = None,
 ) -> list[dict]:
     """
     Search for similar vectors in Milvus.
+
+    Args:
+        query_embedding: Query vector.
+        top_k: Number of hits.
+        collection_name: Override the configured collection.
+        expr: Optional Milvus boolean expression, e.g. ``tenant_id == "x"``.
     """
     settings = get_settings()
     client = get_milvus_client()
@@ -120,6 +150,7 @@ def search_vectors(
             collection_name=col_name,
             data=[query_embedding],
             limit=top_k,
+            expr=expr,
             output_fields=["document_id", "chunk_id", "content", "metadata"],
         )
 
@@ -154,15 +185,22 @@ def insert_vectors(
     col_name = collection_name or settings.MILVUS_COLLECTION
 
     try:
+        has_tenant_field = "tenant_id" in get_collection_fields(col_name)
         data = []
         for doc in documents:
-            data.append({
+            row = {
                 "document_id": doc["document_id"],
                 "chunk_id": doc["chunk_id"],
                 "content": doc["content"],
                 "embedding": doc["embedding"],
                 "metadata": json.dumps(doc.get("metadata", {})),
-            })
+            }
+            if has_tenant_field:
+                # Legacy collections have no tenant field; only add the key
+                # when the schema accepts it, otherwise the insert rejects the
+                # whole batch with "field tenant_id not exist".
+                row["tenant_id"] = doc.get("tenant_id") or "__platform__"
+            data.append(row)
 
         result = client.insert(collection_name=col_name, data=data)
         logger.info("Inserted %d vectors into Milvus", len(data))
@@ -170,6 +208,43 @@ def insert_vectors(
 
     except Exception as e:
         logger.error("Milvus insert error: %s", e)
+        return 0
+
+
+def delete_vectors_by_document(
+    document_id: str,
+    collection_name: Optional[str] = None,
+) -> int:
+    """Delete every vector belonging to a document.
+
+    Needed because deleting a document removes its PostgreSQL rows and its
+    MinIO object, but nothing used to touch Milvus — so the vectors stayed
+    behind and retrieval could still return chunks of a deleted document.
+
+    Args:
+        document_id: UUID of the document whose vectors should go.
+        collection_name: Override the configured collection.
+
+    Returns:
+        Number of entities Milvus reports as deleted, or 0 on failure.
+    """
+    settings = get_settings()
+    client = get_milvus_client()
+    col_name = collection_name or settings.MILVUS_COLLECTION
+
+    try:
+        result = client.delete(
+            collection_name=col_name,
+            filter=f'document_id == "{document_id}"',
+        )
+        deleted = 0
+        if isinstance(result, dict):
+            deleted = int(result.get("delete_count", 0) or 0)
+        logger.info("Deleted %d vectors for document %s", deleted, document_id)
+        return deleted
+
+    except Exception as e:
+        logger.error("Milvus delete error for document %s: %s", document_id, e)
         return 0
 
 
