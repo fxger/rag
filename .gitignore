@@ -81,3 +81,5 @@ credentials.md
 *.bak
 *.orig
 *.rej
+# JWT 等运行期凭证文件
+.token
